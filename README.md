@@ -263,6 +263,10 @@ When in doubt, check if the server's README mentions hooks or lifecycle events. 
 - Rust 1.91+ (for oxc)
 - Claude and/or Codex CLI installed
 
+## Built by
+
+[cas.dev](https://cas.dev) — the coding agent system.
+
 ## License
 
 MIT
