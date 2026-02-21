@@ -47,5 +47,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # JSON Schema generation (for rmcp tool parameters)
 schemars = "1"
 
+# HTTP types (for custom headers)
+http = "1"
+
 # Async utilities
 futures = "0.3"

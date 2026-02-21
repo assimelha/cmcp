@@ -223,6 +223,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "http",
  "rmcp",
  "rquickjs",
  "schemars",

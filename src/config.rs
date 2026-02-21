@@ -18,6 +18,10 @@ pub enum ServerConfig {
     #[serde(rename = "http")]
     Http {
         url: String,
+        /// Bearer token (without "Bearer " prefix).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<String>,
+        /// Custom HTTP headers sent with every request.
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         headers: HashMap<String, String>,
     },
@@ -25,6 +29,10 @@ pub enum ServerConfig {
     #[serde(rename = "sse")]
     Sse {
         url: String,
+        /// Bearer token (without "Bearer " prefix).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<String>,
+        /// Custom HTTP headers.
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         headers: HashMap<String, String>,
     },

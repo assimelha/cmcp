@@ -1,9 +1,11 @@
 mod catalog;
 mod client;
 mod config;
+mod import;
 mod sandbox;
 mod server;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -36,12 +38,25 @@ enum Commands {
     ///
     /// Examples:
     ///   cmcp add canva https://mcp.canva.com/mcp
+    ///   cmcp add canva https://mcp.canva.com/mcp --auth env:CANVA_TOKEN
     ///   cmcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
-    ///   cmcp add --transport stdio fs -- npx -y @modelcontextprotocol/server-filesystem /tmp
+    ///   cmcp add -e GITHUB_TOKEN=env:GITHUB_TOKEN --transport stdio github -- npx -y @modelcontextprotocol/server-github
     Add {
         /// Transport type (http, stdio, sse). Defaults to http if a URL is given, stdio otherwise.
         #[arg(short, long)]
         transport: Option<String>,
+
+        /// Bearer auth token for http/sse (use "env:VAR" to read from environment).
+        #[arg(short, long)]
+        auth: Option<String>,
+
+        /// Custom HTTP header (e.g. -H "X-Api-Key: abc123"). Can be repeated.
+        #[arg(short = 'H', long = "header")]
+        headers: Vec<String>,
+
+        /// Environment variable for stdio (e.g. -e KEY=value). Can be repeated.
+        #[arg(short, long = "env")]
+        envs: Vec<String>,
 
         /// Server name (e.g. "canva", "github", "filesystem")
         name: String,
@@ -72,6 +87,30 @@ enum Commands {
         scope: String,
     },
 
+    /// Import MCP servers from Claude Code or Codex.
+    ///
+    /// Scans known config locations and adds discovered servers to cmcp.
+    ///
+    /// Examples:
+    ///   cmcp import                    # import from all sources
+    ///   cmcp import --from claude      # only from Claude Code
+    ///   cmcp import --from codex       # only from Codex
+    ///   cmcp import --dry-run          # preview without writing
+    ///   cmcp import --force            # overwrite existing servers
+    Import {
+        /// Source to import from: "claude", "codex", or omit for all.
+        #[arg(short, long)]
+        from: Option<String>,
+
+        /// Preview what would be imported without writing.
+        #[arg(short, long)]
+        dry_run: bool,
+
+        /// Overwrite existing servers with the same name.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Uninstall cmcp from Claude Code.
     Uninstall,
 
@@ -86,13 +125,22 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Add {
             transport,
+            auth,
+            headers,
+            envs,
             name,
             args,
-        } => cmd_add(cli.config.as_ref(), transport, name, args),
+        } => cmd_add(cli.config.as_ref(), transport, auth, headers, envs, name, args),
 
         Commands::Remove { name } => cmd_remove(cli.config.as_ref(), &name),
 
         Commands::List { short } => cmd_list(cli.config.as_ref(), short).await,
+
+        Commands::Import {
+            from,
+            dry_run,
+            force,
+        } => cmd_import(cli.config.as_ref(), from, dry_run, force),
 
         Commands::Install { scope } => cmd_install(cli.config.as_ref(), &scope),
 
@@ -105,12 +153,15 @@ async fn main() -> Result<()> {
 fn cmd_add(
     config_path: Option<&PathBuf>,
     transport: Option<String>,
+    auth: Option<String>,
+    headers: Vec<String>,
+    envs: Vec<String>,
     name: String,
     args: Vec<String>,
 ) -> Result<()> {
     let mut cfg = config::Config::load(config_path)?;
 
-    let server_config = parse_server_args(transport, &args)?;
+    let server_config = parse_server_args(transport, auth, headers, envs, &args)?;
 
     let already_exists = cfg.servers.contains_key(&name);
     cfg.add_server(name.clone(), server_config);
@@ -129,8 +180,37 @@ fn cmd_add(
     Ok(())
 }
 
-fn parse_server_args(transport: Option<String>, args: &[String]) -> Result<ServerConfig> {
-    // Determine transport from explicit flag or by guessing from args
+/// Parse "Key: Value" or "Key=Value" header strings into a HashMap.
+fn parse_headers(raw: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for h in raw {
+        if let Some((k, v)) = h.split_once(':') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        } else if let Some((k, v)) = h.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    map
+}
+
+/// Parse "KEY=VALUE" env strings into a HashMap.
+fn parse_envs(raw: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for e in raw {
+        if let Some((k, v)) = e.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
+        }
+    }
+    map
+}
+
+fn parse_server_args(
+    transport: Option<String>,
+    auth: Option<String>,
+    headers: Vec<String>,
+    envs: Vec<String>,
+    args: &[String],
+) -> Result<ServerConfig> {
     let transport = transport.unwrap_or_else(|| {
         if let Some(first) = args.first() {
             if first.starts_with("http://") || first.starts_with("https://") {
@@ -151,7 +231,8 @@ fn parse_server_args(transport: Option<String>, args: &[String]) -> Result<Serve
                 .clone();
             Ok(ServerConfig::Http {
                 url,
-                headers: Default::default(),
+                auth,
+                headers: parse_headers(&headers),
             })
         }
         "sse" => {
@@ -161,11 +242,11 @@ fn parse_server_args(transport: Option<String>, args: &[String]) -> Result<Serve
                 .clone();
             Ok(ServerConfig::Sse {
                 url,
-                headers: Default::default(),
+                auth,
+                headers: parse_headers(&headers),
             })
         }
         "stdio" => {
-            // args might start with "--" separator from clap trailing_var_arg
             let cleaned: Vec<String> = args
                 .iter()
                 .skip_while(|a| *a == "--")
@@ -182,7 +263,7 @@ fn parse_server_args(transport: Option<String>, args: &[String]) -> Result<Serve
             Ok(ServerConfig::Stdio {
                 command,
                 args: cmd_args,
-                env: Default::default(),
+                env: parse_envs(&envs),
             })
         }
         other => anyhow::bail!("unknown transport \"{other}\". Use: http, stdio, or sse"),
@@ -244,6 +325,93 @@ async fn cmd_list(config_path: Option<&PathBuf>, short: bool) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn cmd_import(
+    config_path: Option<&PathBuf>,
+    from: Option<String>,
+    dry_run: bool,
+    force: bool,
+) -> Result<()> {
+    let source_filter = match from.as_deref() {
+        Some("claude" | "claude-code") => Some(import::ImportSource::ClaudeCode),
+        Some("codex" | "openai") => Some(import::ImportSource::Codex),
+        Some(other) => anyhow::bail!(
+            "unknown source \"{other}\". Use: claude, codex, or omit for all"
+        ),
+        None => None,
+    };
+
+    let discovered = import::discover(source_filter)?;
+
+    if discovered.is_empty() {
+        println!("No MCP servers found to import.");
+        if source_filter.is_none() {
+            println!("\nSearched:");
+            println!("  Claude Code: ~/.claude.json, .mcp.json");
+            println!("  Codex:       ~/.codex/config.toml, .codex/config.toml");
+        }
+        return Ok(());
+    }
+
+    let mut cfg = config::Config::load(config_path)?;
+
+    let mut added = 0;
+    let mut skipped = 0;
+    let mut updated = 0;
+
+    for server in &discovered {
+        let exists = cfg.servers.contains_key(&server.name);
+
+        let transport_info = match &server.config {
+            ServerConfig::Http { url, .. } => format!("http  {url}"),
+            ServerConfig::Sse { url, .. } => format!("sse   {url}"),
+            ServerConfig::Stdio { command, args, .. } => {
+                format!("stdio {} {}", command, args.join(" "))
+            }
+        };
+
+        if exists && !force {
+            if dry_run {
+                println!("  skip  {:<20} {:<12} {} (already exists)", server.name, server.source, transport_info);
+            }
+            skipped += 1;
+        } else if exists && force {
+            if dry_run {
+                println!("  update {:<19} {:<12} {}", server.name, server.source, transport_info);
+            } else {
+                cfg.add_server(server.name.clone(), server.config.clone());
+            }
+            updated += 1;
+        } else {
+            if dry_run {
+                println!("  add   {:<20} {:<12} {}", server.name, server.source, transport_info);
+            } else {
+                cfg.add_server(server.name.clone(), server.config.clone());
+            }
+            added += 1;
+        }
+    }
+
+    if dry_run {
+        println!();
+        println!("Dry run: {} to add, {} to update, {} to skip", added, updated, skipped);
+        println!("Run without --dry-run to apply.");
+    } else {
+        cfg.save(config_path)?;
+        let path = config_path
+            .cloned()
+            .unwrap_or_else(|| config::default_config_path().unwrap());
+
+        if added > 0 || updated > 0 {
+            println!("Imported {} server(s) ({} added, {} updated, {} skipped)", added + updated, added, updated, skipped);
+            println!("Config: {}", path.display());
+        } else {
+            println!("No new servers to import ({} already exist).", skipped);
+        }
+    }
+
     Ok(())
 }
 

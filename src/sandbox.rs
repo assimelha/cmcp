@@ -26,11 +26,49 @@ fn eval_opts() -> EvalOptions {
     opts
 }
 
+/// JS code that defines console.log/warn/error/info, writing to __stderr.
+const CONSOLE_SHIM: &str = r#"
+const console = {
+  _write(level, args) {
+    const msg = args.map(a => {
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(' ');
+    __stderr(level + ': ' + msg);
+  },
+  log(...args)   { this._write('LOG', args); },
+  info(...args)  { this._write('INFO', args); },
+  warn(...args)  { this._write('WARN', args); },
+  error(...args) { this._write('ERROR', args); },
+  debug(...args) { this._write('DEBUG', args); },
+};
+"#;
+
 impl Sandbox {
     pub async fn new(pool: Arc<Mutex<ClientPool>>, catalog: Arc<Catalog>) -> Result<Self> {
         let rt = AsyncRuntime::new()?;
         rt.set_memory_limit(64 * 1024 * 1024).await; // 64 MB
         let ctx = AsyncContext::full(&rt).await?;
+
+        // Install console shim once on the global context.
+        async_with!(ctx => |ctx| {
+            // __stderr: native function that writes to Rust stderr
+            let stderr_fn = Function::new(ctx.clone(), |msg: String| {
+                eprintln!("[js] {msg}");
+            })
+            .map_err(|e| anyhow::anyhow!("failed to create __stderr: {e}"))?;
+
+            ctx.globals().set("__stderr", stderr_fn)
+                .map_err(|e| anyhow::anyhow!("failed to set __stderr: {e}"))?;
+
+            ctx.eval::<(), _>(CONSOLE_SHIM)
+                .catch(&ctx)
+                .map_err(|e| anyhow::anyhow!("failed to install console shim: {e}"))?;
+
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?;
+
         Ok(Self {
             rt,
             ctx,
@@ -45,7 +83,6 @@ impl Sandbox {
         let code = code.to_string();
 
         let result = async_with!(self.ctx => |ctx| {
-            // Inject the tools catalog as a global
             let tools_val: Value = ctx.json_parse(catalog_json_str)
                 .catch(&ctx)
                 .map_err(|e| anyhow::anyhow!("failed to parse catalog: {e}"))?;
@@ -53,7 +90,6 @@ impl Sandbox {
             ctx.globals().set("tools", tools_val)
                 .map_err(|e| anyhow::anyhow!("failed to set tools: {e}"))?;
 
-            // Wrap in async IIFE
             let wrapped = format!("(async () => {{ {code} }})()", code = code);
 
             let promise: Promise = ctx.eval_with_options(wrapped, eval_opts())
@@ -65,19 +101,7 @@ impl Sandbox {
                 .catch(&ctx)
                 .map_err(|e| anyhow::anyhow!("JS promise rejected: {e}"))?;
 
-            // Stringify back to JSON
-            let json_rq_str = ctx.json_stringify(result)
-                .catch(&ctx)
-                .map_err(|e| anyhow::anyhow!("failed to stringify: {e}"))?;
-
-            let json_std_str = match json_rq_str {
-                Some(s) => s.to_string()
-                    .map_err(|e| anyhow::anyhow!("string conversion: {e}"))?,
-                None => "null".to_owned(),
-            };
-
-            serde_json::from_str(&json_std_str)
-                .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
+            stringify_result(&ctx, result)
         })
         .await?;
 
@@ -91,8 +115,7 @@ impl Sandbox {
         let code = code.to_string();
 
         let result = async_with!(self.ctx => |ctx| {
-            // Inject __call_tool as an async native function using the Async wrapper.
-            // JS: const result = await __call_tool("canva", "create_design", '{"type":"poster"}')
+            // Inject __call_tool as an async native function.
             let pool_ref = pool.clone();
             let call_tool_fn = Function::new(
                 ctx.clone(),
@@ -151,7 +174,7 @@ impl Sandbox {
                 ));
             }
 
-            // Also inject the catalog for reference
+            // Also inject the catalog
             let catalog_json_str = serde_json::to_string(&catalog.to_json_value())
                 .unwrap_or_else(|_| "[]".to_owned());
             setup.push_str(&format!("const tools = {};", catalog_json_str));
@@ -167,21 +190,29 @@ impl Sandbox {
                 .catch(&ctx)
                 .map_err(|e| anyhow::anyhow!("JS promise rejected: {e}"))?;
 
-            let json_rq_str = ctx.json_stringify(result)
-                .catch(&ctx)
-                .map_err(|e| anyhow::anyhow!("failed to stringify: {e}"))?;
-
-            let json_std_str = match json_rq_str {
-                Some(s) => s.to_string()
-                    .map_err(|e| anyhow::anyhow!("string conversion: {e}"))?,
-                None => "null".to_owned(),
-            };
-
-            serde_json::from_str(&json_std_str)
-                .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
+            stringify_result(&ctx, result)
         })
         .await?;
 
         Ok(result)
     }
+}
+
+/// Convert a JS Value back to serde_json::Value via JSON.stringify.
+fn stringify_result<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    value: Value<'js>,
+) -> Result<serde_json::Value> {
+    let json_rq_str = ctx.json_stringify(value)
+        .catch(ctx)
+        .map_err(|e| anyhow::anyhow!("failed to stringify: {e}"))?;
+
+    let json_std_str = match json_rq_str {
+        Some(s) => s.to_string()
+            .map_err(|e| anyhow::anyhow!("string conversion: {e}"))?,
+        None => "null".to_owned(),
+    };
+
+    serde_json::from_str(&json_std_str)
+        .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
 }
