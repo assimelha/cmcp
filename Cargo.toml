@@ -5,6 +5,10 @@ edition = "2024"
 description = "A code-mode MCP proxy that aggregates multiple MCP servers behind search() + execute()"
 license = "MIT"
 
+[[bin]]
+name = "cmcp"
+path = "src/main.rs"
+
 [dependencies]
 # MCP SDK - official Rust implementation
 rmcp = { version = "0.16", features = [
