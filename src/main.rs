@@ -129,6 +129,30 @@ enum Commands {
         target: Option<String>,
     },
 
+    /// Passthrough for Claude CLI syntax.
+    ///
+    /// Copy any `claude mcp add` command and prepend `cmcp`:
+    ///   cmcp claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+    ///   cmcp claude mcp add --transport http canva https://mcp.canva.com/mcp
+    #[command(name = "claude")]
+    Claude {
+        /// Raw arguments (parsed as Claude CLI syntax).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Passthrough for Codex CLI syntax.
+    ///
+    /// Copy any `codex mcp add` command and prepend `cmcp`:
+    ///   cmcp codex mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
+    ///   cmcp codex mcp add api-server --url https://api.example.com
+    #[command(name = "codex")]
+    Codex {
+        /// Raw arguments (parsed as Codex CLI syntax).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// Start the MCP server (used internally by Claude).
     Serve,
 }
@@ -160,6 +184,10 @@ async fn main() -> Result<()> {
         Commands::Install { target, scope } => cmd_install(cli.config.as_ref(), target.as_deref(), &scope),
 
         Commands::Uninstall { target } => cmd_uninstall(target.as_deref()),
+
+        Commands::Claude { args } => cmd_passthrough_claude(cli.config.as_ref(), &args),
+
+        Commands::Codex { args } => cmd_passthrough_codex(cli.config.as_ref(), &args),
 
         Commands::Serve => cmd_serve(cli.config.as_ref()).await,
     }
@@ -674,6 +702,197 @@ fn uninstall_from_codex() {
         Ok(()) => println!("Uninstalled from Codex."),
         Err(e) => println!("Codex: could not write config: {e}"),
     }
+}
+
+/// Parse `cmcp claude mcp add <name> [--scope S] [--transport T] <url-or-cmd> [args...]`
+///
+/// Claude CLI syntax: `claude mcp add [--scope S] [--transport T] <name> [--] <url-or-cmd> [args...]`
+fn cmd_passthrough_claude(config_path: Option<&PathBuf>, raw_args: &[String]) -> Result<()> {
+    // Expect: mcp add [flags...] <name> [--] <cmd-or-url> [args...]
+    // Skip leading "mcp" and "add"
+    let args: Vec<&str> = raw_args.iter().map(|s| s.as_str()).collect();
+
+    let rest = match args.as_slice() {
+        ["mcp", "add", rest @ ..] => rest.to_vec(),
+        ["add", rest @ ..] => rest.to_vec(),
+        _ => anyhow::bail!(
+            "expected: cmcp claude mcp add <name> ...\n\
+             Usage: copy a `claude mcp add` command and prepend `cmcp`"
+        ),
+    };
+
+    // Parse flags and positional args from the Claude syntax.
+    let mut transport = None;
+    let mut scope = None;
+    let mut positional = Vec::new();
+    let mut i = 0;
+
+    while i < rest.len() {
+        match rest[i] {
+            "--transport" | "-t" if i + 1 < rest.len() => {
+                transport = Some(rest[i + 1].to_string());
+                i += 2;
+            }
+            "--scope" | "-s" if i + 1 < rest.len() => {
+                scope = Some(rest[i + 1].to_string());
+                i += 2;
+            }
+            "--" => {
+                // Everything after -- is command args
+                positional.extend(rest[i..].iter().map(|s| s.to_string()));
+                break;
+            }
+            arg if arg.starts_with('-') => {
+                // Skip unknown flags (e.g. --header, --env) with their values
+                if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                positional.push(rest[i].to_string());
+                i += 1;
+            }
+        }
+    }
+
+    // First positional is the server name, rest is url/command + args.
+    let name = positional
+        .first()
+        .context("missing server name")?
+        .clone();
+    let cmd_args: Vec<String> = positional[1..].to_vec();
+
+    let server_config = parse_server_args(transport, None, vec![], vec![], &cmd_args)?;
+
+    let mut cfg = config::Config::load(config_path)?;
+    let exists = cfg.servers.contains_key(&name);
+    cfg.add_server(name.clone(), server_config);
+    cfg.save(config_path)?;
+
+    if exists {
+        println!("Updated server \"{name}\"");
+    } else {
+        println!("Added server \"{name}\"");
+    }
+
+    if let Some(s) = &scope {
+        println!("  (--scope {s} noted — applies to `cmcp install --scope {s}`)");
+    }
+
+    let path = config_path
+        .cloned()
+        .unwrap_or_else(|| config::default_config_path().unwrap());
+    println!("Config: {}", path.display());
+    Ok(())
+}
+
+/// Parse `cmcp codex mcp add <name> [--url U] [--bearer-token-env-var V] [--] <cmd> [args...]`
+///
+/// Codex CLI syntax: `codex mcp add <name> [--url U] [--env K=V] [--] <cmd> [args...]`
+fn cmd_passthrough_codex(config_path: Option<&PathBuf>, raw_args: &[String]) -> Result<()> {
+    let args: Vec<&str> = raw_args.iter().map(|s| s.as_str()).collect();
+
+    let rest = match args.as_slice() {
+        ["mcp", "add", rest @ ..] => rest.to_vec(),
+        ["add", rest @ ..] => rest.to_vec(),
+        _ => anyhow::bail!(
+            "expected: cmcp codex mcp add <name> ...\n\
+             Usage: copy a `codex mcp add` command and prepend `cmcp`"
+        ),
+    };
+
+    // Parse flags and positional args from the Codex syntax.
+    let mut url = None;
+    let mut auth = None;
+    let mut envs = HashMap::new();
+    let mut positional = Vec::new();
+    let mut i = 0;
+
+    while i < rest.len() {
+        match rest[i] {
+            "--url" if i + 1 < rest.len() => {
+                url = Some(rest[i + 1].to_string());
+                i += 2;
+            }
+            "--bearer-token-env-var" if i + 1 < rest.len() => {
+                auth = Some(format!("env:{}", rest[i + 1]));
+                i += 2;
+            }
+            "--bearer-token" if i + 1 < rest.len() => {
+                auth = Some(rest[i + 1].to_string());
+                i += 2;
+            }
+            "--env" if i + 1 < rest.len() => {
+                if let Some((k, v)) = rest[i + 1].split_once('=') {
+                    envs.insert(k.to_string(), v.to_string());
+                }
+                i += 2;
+            }
+            "--" => {
+                positional.extend(rest[i + 1..].iter().map(|s| s.to_string()));
+                break;
+            }
+            arg if arg.starts_with('-') => {
+                // Skip unknown flags with their values.
+                if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                positional.push(rest[i].to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let name = positional
+        .first()
+        .context("missing server name")?
+        .clone();
+
+    let server_config = if let Some(url) = url {
+        // HTTP server
+        ServerConfig::Http {
+            url,
+            auth,
+            headers: HashMap::new(),
+        }
+    } else {
+        // Stdio server — remaining positional args are command + args
+        let cmd_args: Vec<String> = positional[1..].to_vec();
+        let command = cmd_args
+            .first()
+            .context("missing command")?
+            .clone();
+        let args = cmd_args.get(1..).unwrap_or_default().to_vec();
+
+        ServerConfig::Stdio {
+            command,
+            args,
+            env: envs,
+        }
+    };
+
+    let mut cfg = config::Config::load(config_path)?;
+    let exists = cfg.servers.contains_key(&name);
+    cfg.add_server(name.clone(), server_config);
+    cfg.save(config_path)?;
+
+    if exists {
+        println!("Updated server \"{name}\"");
+    } else {
+        println!("Added server \"{name}\"");
+    }
+
+    let path = config_path
+        .cloned()
+        .unwrap_or_else(|| config::default_config_path().unwrap());
+    println!("Config: {}", path.display());
+    Ok(())
 }
 
 async fn cmd_serve(config_path: Option<&PathBuf>) -> Result<()> {

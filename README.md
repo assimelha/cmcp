@@ -14,11 +14,18 @@ claude mcp add github -- npx -y @modelcontextprotocol/server-github
 claude mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
-With cmcp — one proxy, two tools:
+With cmcp — one proxy, two tools. Just prepend `cmcp` to any `claude mcp add` command:
 
 ```
-cmcp add canva https://mcp.canva.com/mcp
-cmcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
+cmcp claude mcp add canva https://mcp.canva.com/mcp
+cmcp claude mcp add github -- npx -y @modelcontextprotocol/server-github
+cmcp install
+```
+
+Or use Codex syntax:
+
+```
+cmcp codex mcp add github -- npx -y @modelcontextprotocol/server-github
 cmcp install
 ```
 
@@ -66,6 +73,26 @@ cmcp add -e GITHUB_TOKEN=env:GITHUB_TOKEN --transport stdio github -- npx -y @mo
 ```
 
 **Note:** Flags (`--auth`, `-H`, `-e`, `--transport`) must come before the server name and URL.
+
+### Copy-paste from READMEs
+
+Most MCP server READMEs provide `claude mcp add` or `codex mcp add` commands. Just prepend `cmcp`:
+
+```bash
+# From a README:
+#   claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+# Just prepend cmcp:
+cmcp claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+
+# Claude HTTP:
+cmcp claude mcp add --transport http canva https://mcp.canva.com/mcp
+
+# Codex stdio:
+cmcp codex mcp add my-server --env TOKEN=secret -- docs-server --port 4000
+
+# Codex HTTP:
+cmcp codex mcp add api-server --url https://api.example.com --bearer-token-env-var API_TOKEN
+```
 
 ### Import from Claude / Codex
 
