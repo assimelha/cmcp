@@ -59,6 +59,10 @@ enum Commands {
         #[arg(short, long = "env")]
         envs: Vec<String>,
 
+        /// Scope: "local" (default), "user" (global), or "project" (.cmcp.toml).
+        #[arg(long, default_value = "local")]
+        scope: String,
+
         /// Server name (e.g. "canva", "github", "filesystem")
         name: String,
 
@@ -71,6 +75,10 @@ enum Commands {
     Remove {
         /// Server name to remove
         name: String,
+
+        /// Scope: "local" (default), "user", or "project".
+        #[arg(long, default_value = "local")]
+        scope: String,
     },
 
     /// List configured servers and their tools.
@@ -167,11 +175,12 @@ async fn main() -> Result<()> {
             auth,
             headers,
             envs,
+            scope,
             name,
             args,
-        } => cmd_add(cli.config.as_ref(), transport, auth, headers, envs, name, args),
+        } => cmd_add(cli.config.as_ref(), transport, auth, headers, envs, &scope, name, args),
 
-        Commands::Remove { name } => cmd_remove(cli.config.as_ref(), &name),
+        Commands::Remove { name, scope } => cmd_remove(cli.config.as_ref(), &name, &scope),
 
         Commands::List { short } => cmd_list(cli.config.as_ref(), short).await,
 
@@ -199,16 +208,19 @@ fn cmd_add(
     auth: Option<String>,
     headers: Vec<String>,
     envs: Vec<String>,
+    scope: &str,
     name: String,
     args: Vec<String>,
 ) -> Result<()> {
-    let mut cfg = config::Config::load(config_path)?;
+    let scope = config::Scope::from_str(scope)?;
+    let path = resolve_config_path(config_path, scope)?;
+    let mut cfg = config::Config::load_from(&path)?;
 
     let server_config = parse_server_args(transport, auth, headers, envs, &args)?;
 
     let already_exists = cfg.servers.contains_key(&name);
     cfg.add_server(name.clone(), server_config);
-    cfg.save(config_path)?;
+    cfg.save_to(&path)?;
 
     if already_exists {
         println!("Updated server \"{name}\"");
@@ -216,11 +228,17 @@ fn cmd_add(
         println!("Added server \"{name}\"");
     }
 
-    let path = config_path
-        .cloned()
-        .unwrap_or_else(|| config::default_config_path().unwrap());
     println!("Config: {}", path.display());
     Ok(())
+}
+
+/// Resolve the config path: explicit --config overrides scope, otherwise scope determines path.
+fn resolve_config_path(explicit: Option<&PathBuf>, scope: config::Scope) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        Ok(p.clone())
+    } else {
+        scope.config_path()
+    }
 }
 
 /// Parse "Key: Value" or "Key=Value" header strings into a HashMap.
@@ -349,11 +367,13 @@ fn parse_server_args(
     }
 }
 
-fn cmd_remove(config_path: Option<&PathBuf>, name: &str) -> Result<()> {
-    let mut cfg = config::Config::load(config_path)?;
+fn cmd_remove(config_path: Option<&PathBuf>, name: &str, scope: &str) -> Result<()> {
+    let scope = config::Scope::from_str(scope)?;
+    let path = resolve_config_path(config_path, scope)?;
+    let mut cfg = config::Config::load_from(&path)?;
 
     if cfg.remove_server(name) {
-        cfg.save(config_path)?;
+        cfg.save_to(&path)?;
         println!("Removed server \"{name}\"");
     } else {
         println!("Server \"{name}\" not found");
@@ -362,7 +382,7 @@ fn cmd_remove(config_path: Option<&PathBuf>, name: &str) -> Result<()> {
 }
 
 async fn cmd_list(config_path: Option<&PathBuf>, short: bool) -> Result<()> {
-    let cfg = config::Config::load(config_path)?;
+    let cfg = config::Config::load_merged(config_path)?;
 
     if cfg.servers.is_empty() {
         println!("No servers configured. Add one with: cmcp add <name> <url>");
@@ -766,10 +786,12 @@ fn cmd_passthrough_claude(config_path: Option<&PathBuf>, raw_args: &[String]) ->
 
     let server_config = parse_server_args(transport, None, vec![], vec![], &cmd_args)?;
 
-    let mut cfg = config::Config::load(config_path)?;
+    let resolved_scope = config::Scope::from_str(scope.as_deref().unwrap_or("local"))?;
+    let path = resolve_config_path(config_path, resolved_scope)?;
+    let mut cfg = config::Config::load_from(&path)?;
     let exists = cfg.servers.contains_key(&name);
     cfg.add_server(name.clone(), server_config);
-    cfg.save(config_path)?;
+    cfg.save_to(&path)?;
 
     if exists {
         println!("Updated server \"{name}\"");
@@ -777,13 +799,6 @@ fn cmd_passthrough_claude(config_path: Option<&PathBuf>, raw_args: &[String]) ->
         println!("Added server \"{name}\"");
     }
 
-    if let Some(s) = &scope {
-        println!("  (--scope {s} noted — applies to `cmcp install --scope {s}`)");
-    }
-
-    let path = config_path
-        .cloned()
-        .unwrap_or_else(|| config::default_config_path().unwrap());
     println!("Config: {}", path.display());
     Ok(())
 }
@@ -901,11 +916,11 @@ async fn cmd_serve(config_path: Option<&PathBuf>) -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cfg = config::Config::load(config_path)?;
+    let cfg = config::Config::load_merged(config_path)?;
 
     info!(
         server_count = cfg.servers.len(),
-        "connecting to upstream servers"
+        "connecting to upstream servers (user + project configs merged)"
     );
 
     let (pool, catalog) = client::ClientPool::connect(cfg.servers).await?;
