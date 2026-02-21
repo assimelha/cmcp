@@ -22,7 +22,7 @@ pub enum ImportSource {
 impl std::fmt::Display for ImportSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ImportSource::ClaudeCode => write!(f, "claude-code"),
+            ImportSource::ClaudeCode => write!(f, "claude"),
             ImportSource::Codex => write!(f, "codex"),
         }
     }
@@ -43,7 +43,7 @@ pub fn discover(source_filter: Option<ImportSource>) -> Result<Vec<ImportedServe
     Ok(servers)
 }
 
-// ── Claude Code ──────────────────────────────────────────────────────
+// ── Claude ───────────────────────────────────────────────────────────
 
 fn discover_claude_code() -> Result<Vec<ImportedServer>> {
     let mut servers = Vec::new();

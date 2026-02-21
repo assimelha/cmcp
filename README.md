@@ -1,6 +1,6 @@
 # cmcp — Code Mode MCP
 
-A proxy that aggregates all your MCP servers behind just **2 tools**: `search()` and `execute()`. Instead of registering dozens of MCP servers with Claude Code, register one.
+A proxy that aggregates all your MCP servers behind just **2 tools**: `search()` and `execute()`. Instead of registering dozens of MCP servers with Claude, register one.
 
 Inspired by [Cloudflare's code-mode MCP](https://blog.cloudflare.com/code-mode-mcp/).
 
@@ -67,7 +67,7 @@ cmcp add -e GITHUB_TOKEN=env:GITHUB_TOKEN --transport stdio github -- npx -y @mo
 
 **Note:** Flags (`--auth`, `-H`, `-e`, `--transport`) must come before the server name and URL.
 
-### Import from Claude Code / Codex
+### Import from Claude / Codex
 
 Already have MCP servers configured? Import them:
 
@@ -75,7 +75,7 @@ Already have MCP servers configured? Import them:
 # Preview what would be imported
 cmcp import --dry-run
 
-# Import from all sources (Claude Code + Codex)
+# Import from all sources (Claude + Codex)
 cmcp import
 
 # Import from a specific source
@@ -90,7 +90,7 @@ Scanned locations:
 
 | Source | Files |
 |--------|-------|
-| Claude Code | `~/.claude.json`, `.mcp.json` |
+| Claude | `~/.claude.json`, `.mcp.json` |
 | Codex | `~/.codex/config.toml`, `.codex/config.toml` |
 
 ### Manage servers
@@ -106,7 +106,7 @@ cmcp list
 cmcp remove canva
 ```
 
-### Register with Claude Code
+### Register with Claude
 
 ```bash
 # Local scope (default — this machine)
@@ -172,7 +172,7 @@ Use `--config <path>` to specify an alternate config file.
 
 cmcp works best with **stateless tool servers** — servers where you just need to discover and call tools (Canva, GitHub, filesystem, Stripe, etc.).
 
-MCP servers that rely on **Claude Code hooks** (SessionStart, PostToolUse, Stop) or other lifecycle integrations outside the MCP protocol should be registered directly with Claude Code, not proxied through cmcp. Hooks are Claude Code shell commands triggered by events — they don't go through MCP and won't fire when proxied.
+MCP servers that rely on **Claude hooks** (SessionStart, PostToolUse, Stop) or other lifecycle integrations outside the MCP protocol should be registered directly with Claude, not proxied through cmcp. Hooks are Claude shell commands triggered by events — they don't go through MCP and won't fire when proxied.
 
 ## Sandbox
 

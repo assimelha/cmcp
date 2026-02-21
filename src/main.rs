@@ -81,20 +81,20 @@ enum Commands {
         short: bool,
     },
 
-    /// Install cmcp into Claude Code (registers the MCP server).
+    /// Install cmcp into Claude (registers the MCP server).
     Install {
         /// Scope: "local" (this machine, default), "user" (global), or "project"
         #[arg(short, long, default_value = "local")]
         scope: String,
     },
 
-    /// Import MCP servers from Claude Code or Codex.
+    /// Import MCP servers from Claude or Codex.
     ///
     /// Scans known config locations and adds discovered servers to cmcp.
     ///
     /// Examples:
     ///   cmcp import                    # import from all sources
-    ///   cmcp import --from claude      # only from Claude Code
+    ///   cmcp import --from claude      # only from Claude
     ///   cmcp import --from codex       # only from Codex
     ///   cmcp import --dry-run          # preview without writing
     ///   cmcp import --force            # overwrite existing servers
@@ -112,10 +112,10 @@ enum Commands {
         force: bool,
     },
 
-    /// Uninstall cmcp from Claude Code.
+    /// Uninstall cmcp from Claude.
     Uninstall,
 
-    /// Start the MCP server (used internally by Claude Code).
+    /// Start the MCP server (used internally by Claude).
     Serve,
 }
 
@@ -350,7 +350,7 @@ fn cmd_import(
         println!("No MCP servers found to import.");
         if source_filter.is_none() {
             println!("\nSearched:");
-            println!("  Claude Code: ~/.claude.json, .mcp.json");
+            println!("  Claude: ~/.claude.json, .mcp.json");
             println!("  Codex:       ~/.codex/config.toml, .codex/config.toml");
         }
         return Ok(());
@@ -424,7 +424,7 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| config::default_config_path().unwrap());
 
-    // Match Claude Code's scopes exactly: local, user, project
+    // Match Claude's scopes exactly: local, user, project
     let scope_flag = match scope {
         "user" | "global" => "--scope user",
         "project" => "--scope project",
@@ -437,7 +437,7 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
         config_path.display(),
     );
 
-    println!("Registering with Claude Code ({scope})...\n");
+    println!("Registering with Claude ({scope})...\n");
 
     // Try to run it automatically
     let status = std::process::Command::new("sh")
@@ -448,7 +448,7 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            println!("Installed! Restart Claude Code to pick it up.");
+            println!("Installed! Restart Claude to pick it up.");
         }
         _ => {
             println!("Could not run automatically. Run this manually:\n");
@@ -466,7 +466,7 @@ fn cmd_uninstall() -> Result<()> {
         .status();
 
     match status {
-        Ok(s) if s.success() => println!("Uninstalled code-mode-mcp from Claude Code."),
+        Ok(s) if s.success() => println!("Uninstalled code-mode-mcp from Claude."),
         _ => println!("Run manually: claude mcp remove code-mode-mcp"),
     }
     Ok(())
