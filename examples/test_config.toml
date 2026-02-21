@@ -1,0 +1,5 @@
+# Minimal test config — uses only the filesystem MCP server (no auth needed)
+[servers.filesystem]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]

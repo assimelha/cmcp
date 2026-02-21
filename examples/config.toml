@@ -1,0 +1,30 @@
+# Code Mode MCP — Example Configuration
+#
+# Each server entry defines an upstream MCP server to aggregate.
+# All their tools become available through search() + execute().
+
+# Streamable HTTP transport (modern MCP servers)
+[servers.canva]
+transport = "http"
+url = "https://mcp.canva.com/mcp"
+
+[servers.figma]
+transport = "http"
+url = "https://mcp.figma.com/mcp"
+
+# Stdio transport (local MCP servers, spawned as subprocesses)
+[servers.filesystem]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[servers.github]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "env:GITHUB_TOKEN" }
+
+# Legacy SSE transport (not yet implemented)
+# [servers.legacy]
+# transport = "sse"
+# url = "https://old-server.com/sse"
