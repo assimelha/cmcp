@@ -20,6 +20,7 @@ cmcp flips the model: instead of N tools, you get **2**:
 The agent writes code to interact with tools, not JSON blobs. This means:
 
 - **99% fewer tool definitions** in context (2 vs hundreds)
+- **Hot-reload** — add servers without restarting Claude or Codex
 - **Composable** — chain multiple tool calls in a single execution
 - **Type-safe** — auto-generated TypeScript declarations from JSON Schema
 - **Sandboxed** — code runs in a QuickJS engine with a 64 MB memory limit
