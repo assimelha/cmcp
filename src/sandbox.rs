@@ -23,7 +23,10 @@ fn eval_opts() -> EvalOptions {
     let mut opts = EvalOptions::default();
     opts.global = true;
     opts.strict = false;
-    opts.promise = true;
+    // promise = false: our code is already wrapped in (async () => { ... })()
+    // which returns a Promise. Setting promise = true adds JS_EVAL_FLAG_ASYNC
+    // which double-wraps the result, causing Promise<Promise<T>> instead of Promise<T>.
+    opts.promise = false;
     opts
 }
 
