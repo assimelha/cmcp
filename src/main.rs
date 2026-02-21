@@ -219,6 +219,37 @@ fn parse_envs(raw: &[String]) -> HashMap<String, String> {
     map
 }
 
+/// Strip Claude/Codex CLI flags that users copy from READMEs but aren't cmcp flags.
+/// e.g. `cmcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest`
+///       → strips `--scope user`, keeps `npx chrome-devtools-mcp@latest`
+fn strip_foreign_flags(args: &[String]) -> (Vec<String>, Option<String>) {
+    let mut cleaned = Vec::new();
+    let mut extracted_transport = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            // --scope is a Claude CLI flag, not a cmcp flag. Skip it + its value.
+            "--scope" => {
+                i += 1; // skip the value too
+            }
+            // --transport may appear in the trailing args if user put it after the name.
+            // Extract its value so we can use it.
+            "--transport" if i + 1 < args.len() => {
+                extracted_transport = Some(args[i + 1].clone());
+                i += 1; // skip the value too
+            }
+            _ => {
+                cleaned.push(arg.clone());
+            }
+        }
+        i += 1;
+    }
+
+    (cleaned, extracted_transport)
+}
+
 fn parse_server_args(
     transport: Option<String>,
     auth: Option<String>,
@@ -226,17 +257,22 @@ fn parse_server_args(
     envs: Vec<String>,
     args: &[String],
 ) -> Result<ServerConfig> {
-    let transport = transport.unwrap_or_else(|| {
-        if let Some(first) = args.first() {
-            if first.starts_with("http://") || first.starts_with("https://") {
-                "http".to_string()
+    let (args, trailing_transport) = strip_foreign_flags(args);
+
+    // Use explicitly provided --transport, or one extracted from trailing args, or auto-detect.
+    let transport = transport
+        .or(trailing_transport)
+        .unwrap_or_else(|| {
+            if let Some(first) = args.first() {
+                if first.starts_with("http://") || first.starts_with("https://") {
+                    "http".to_string()
+                } else {
+                    "stdio".to_string()
+                }
             } else {
-                "stdio".to_string()
+                "http".to_string()
             }
-        } else {
-            "http".to_string()
-        }
-    });
+        });
 
     match transport.as_str() {
         "http" => {
@@ -264,7 +300,7 @@ fn parse_server_args(
         "stdio" => {
             let cleaned: Vec<String> = args
                 .iter()
-                .skip_while(|a| *a == "--")
+                .skip_while(|a| a.as_str() == "--")
                 .cloned()
                 .collect();
 

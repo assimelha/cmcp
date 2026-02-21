@@ -218,10 +218,38 @@ fn stringify_result<'js>(
         .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
 }
 
-/// Prepend type declarations and transpile TypeScript to JavaScript.
+/// Prepend type declarations, wrap in async function, and transpile TypeScript to JavaScript.
+///
+/// The agent code may contain `return` statements (e.g. `return tools.filter(...)`),
+/// so we wrap in `async function __agent__() { ... }` before transpiling. After
+/// transpilation we extract the function body for QuickJS to wrap in its own IIFE.
 fn transpile_agent_code(code: &str, type_decls: &str) -> Result<String> {
-    // Combine type declarations with agent code so oxc sees the full context.
-    let ts_source = format!("{type_decls}\n{code}");
-    transpile::ts_to_js(&ts_source)
-        .map_err(|e| anyhow::anyhow!("TypeScript transpile error: {e}"))
+    // Wrap agent code in a function so `return` is valid during transpilation.
+    let ts_source = format!(
+        "{type_decls}\nasync function __agent__() {{\n{code}\n}}",
+    );
+    let js = transpile::ts_to_js(&ts_source)
+        .map_err(|e| anyhow::anyhow!("TypeScript transpile error: {e}"))?;
+
+    // Extract the function body — everything between first `{` and last `}`.
+    // The transpiled output looks like: `async function __agent__() { <body> }`
+    // (type declarations are stripped, so only the function remains)
+    let body = if let Some(start) = js.find("async function __agent__()") {
+        let after_fn = &js[start..];
+        if let Some(open) = after_fn.find('{') {
+            let inner = &after_fn[open + 1..];
+            if let Some(close) = inner.rfind('}') {
+                inner[..close].trim().to_string()
+            } else {
+                inner.trim().to_string()
+            }
+        } else {
+            js
+        }
+    } else {
+        // Fallback: return the full transpiled output.
+        js
+    };
+
+    Ok(body)
 }
