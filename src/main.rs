@@ -81,9 +81,19 @@ enum Commands {
         short: bool,
     },
 
-    /// Install cmcp into Claude (registers the MCP server).
+    /// Install cmcp into Claude and/or Codex.
+    ///
+    /// Examples:
+    ///   cmcp install                   # install into both Claude and Codex
+    ///   cmcp install --target claude   # only Claude
+    ///   cmcp install --target codex    # only Codex
+    ///   cmcp install --scope user      # Claude user scope
     Install {
-        /// Scope: "local" (this machine, default), "user" (global), or "project"
+        /// Target: "claude", "codex", or omit for both.
+        #[arg(short, long)]
+        target: Option<String>,
+
+        /// Scope for Claude: "local" (default), "user" (global), or "project".
         #[arg(short, long, default_value = "local")]
         scope: String,
     },
@@ -112,8 +122,12 @@ enum Commands {
         force: bool,
     },
 
-    /// Uninstall cmcp from Claude.
-    Uninstall,
+    /// Uninstall cmcp from Claude and/or Codex.
+    Uninstall {
+        /// Target: "claude", "codex", or omit for both.
+        #[arg(short, long)]
+        target: Option<String>,
+    },
 
     /// Start the MCP server (used internally by Claude).
     Serve,
@@ -143,9 +157,9 @@ async fn main() -> Result<()> {
             force,
         } => cmd_import(cli.config.as_ref(), from, dry_run, force),
 
-        Commands::Install { scope } => cmd_install(cli.config.as_ref(), &scope),
+        Commands::Install { target, scope } => cmd_install(cli.config.as_ref(), target.as_deref(), &scope),
 
-        Commands::Uninstall => cmd_uninstall(),
+        Commands::Uninstall { target } => cmd_uninstall(target.as_deref()),
 
         Commands::Serve => cmd_serve(cli.config.as_ref()).await,
     }
@@ -416,7 +430,7 @@ fn cmd_import(
     Ok(())
 }
 
-fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
+fn cmd_install(config_path: Option<&PathBuf>, target: Option<&str>, scope: &str) -> Result<()> {
     let cmcp_bin = std::env::current_exe()
         .context("could not determine cmcp binary path")?;
 
@@ -424,7 +438,30 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| config::default_config_path().unwrap());
 
-    // Match Claude's scopes exactly: local, user, project
+    let install_claude = target.is_none() || matches!(target, Some("claude"));
+    let install_codex = target.is_none() || matches!(target, Some("codex" | "openai"));
+
+    if let Some(t) = target {
+        if !matches!(t, "claude" | "codex" | "openai") {
+            anyhow::bail!("unknown target \"{t}\". Use: claude, codex, or omit for both");
+        }
+    }
+
+    if install_claude {
+        install_to_claude(&cmcp_bin, &config_path, scope);
+    }
+
+    if install_codex {
+        if install_claude {
+            println!();
+        }
+        install_to_codex(&cmcp_bin, &config_path);
+    }
+
+    Ok(())
+}
+
+fn install_to_claude(cmcp_bin: &std::path::Path, config_path: &std::path::Path, scope: &str) {
     let scope_flag = match scope {
         "user" | "global" => "--scope user",
         "project" => "--scope project",
@@ -437,9 +474,8 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
         config_path.display(),
     );
 
-    println!("Registering with Claude ({scope})...\n");
+    println!("Registering with Claude ({scope})...");
 
-    // Try to run it automatically
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -448,28 +484,160 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            println!("Installed! Restart Claude to pick it up.");
+            println!("  Installed in Claude! Restart to pick it up.");
         }
         _ => {
-            println!("Could not run automatically. Run this manually:\n");
+            println!("  Could not run automatically. Run this manually:\n");
             println!("  {cmd}");
         }
+    }
+}
+
+fn install_to_codex(cmcp_bin: &std::path::Path, config_path: &std::path::Path) {
+    println!("Registering with Codex...");
+
+    // Codex uses ~/.codex/config.toml with [mcp_servers.name] sections.
+    let codex_config_path = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".codex").join("config.toml"));
+
+    let Some(codex_path) = codex_config_path else {
+        println!("  Could not determine Codex config path (HOME not set).");
+        println!("  Add manually to ~/.codex/config.toml:\n");
+        print_codex_snippet(cmcp_bin, config_path);
+        return;
+    };
+
+    // Read existing config or start fresh.
+    let mut content = if codex_path.exists() {
+        std::fs::read_to_string(&codex_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Check if already registered.
+    if content.contains("[mcp_servers.code-mode-mcp]") {
+        println!("  Already registered in Codex config.");
+        return;
+    }
+
+    // Append the server config.
+    let snippet = format!(
+        "\n[mcp_servers.code-mode-mcp]\ncommand = \"{}\"\nargs = [\"serve\", \"--config\", \"{}\"]\n",
+        cmcp_bin.display(),
+        config_path.display(),
+    );
+
+    content.push_str(&snippet);
+
+    if let Some(parent) = codex_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    match std::fs::write(&codex_path, &content) {
+        Ok(()) => {
+            println!("  Installed in Codex! ({})", codex_path.display());
+        }
+        Err(e) => {
+            println!("  Could not write to {}: {e}", codex_path.display());
+            println!("  Add manually:\n");
+            print_codex_snippet(cmcp_bin, config_path);
+        }
+    }
+}
+
+fn print_codex_snippet(cmcp_bin: &std::path::Path, config_path: &std::path::Path) {
+    println!("  [mcp_servers.code-mode-mcp]");
+    println!("  command = \"{}\"", cmcp_bin.display());
+    println!(
+        "  args = [\"serve\", \"--config\", \"{}\"]",
+        config_path.display()
+    );
+}
+
+fn cmd_uninstall(target: Option<&str>) -> Result<()> {
+    let uninstall_claude = target.is_none() || matches!(target, Some("claude"));
+    let uninstall_codex = target.is_none() || matches!(target, Some("codex" | "openai"));
+
+    if let Some(t) = target {
+        if !matches!(t, "claude" | "codex" | "openai") {
+            anyhow::bail!("unknown target \"{t}\". Use: claude, codex, or omit for both");
+        }
+    }
+
+    if uninstall_claude {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("claude mcp remove code-mode-mcp")
+            .env_remove("CLAUDECODE")
+            .status();
+
+        match status {
+            Ok(s) if s.success() => println!("Uninstalled from Claude."),
+            _ => println!("Claude: run manually: claude mcp remove code-mode-mcp"),
+        }
+    }
+
+    if uninstall_codex {
+        uninstall_from_codex();
     }
 
     Ok(())
 }
 
-fn cmd_uninstall() -> Result<()> {
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("claude mcp remove code-mode-mcp")
-        .status();
+fn uninstall_from_codex() {
+    let codex_path = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".codex").join("config.toml"));
 
-    match status {
-        Ok(s) if s.success() => println!("Uninstalled code-mode-mcp from Claude."),
-        _ => println!("Run manually: claude mcp remove code-mode-mcp"),
+    let Some(codex_path) = codex_path else {
+        println!("Codex: could not determine config path.");
+        return;
+    };
+
+    if !codex_path.exists() {
+        println!("Codex: no config found.");
+        return;
     }
-    Ok(())
+
+    let content = match std::fs::read_to_string(&codex_path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("Codex: could not read config: {e}");
+            return;
+        }
+    };
+
+    if !content.contains("[mcp_servers.code-mode-mcp]") {
+        println!("Codex: code-mode-mcp not found in config.");
+        return;
+    }
+
+    // Remove the [mcp_servers.code-mode-mcp] section.
+    let mut lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "[mcp_servers.code-mode-mcp]" {
+            let start = i;
+            i += 1;
+            // Remove until next section header or EOF.
+            while i < lines.len() && !lines[i].starts_with('[') {
+                i += 1;
+            }
+            // Also remove trailing blank line.
+            lines.drain(start..i);
+            // Remove leading blank line if present.
+            if start > 0 && start <= lines.len() && lines.get(start.saturating_sub(1)).is_some_and(|l| l.trim().is_empty()) {
+                lines.remove(start - 1);
+            }
+            break;
+        }
+        i += 1;
+    }
+
+    let new_content = lines.join("\n");
+    match std::fs::write(&codex_path, &new_content) {
+        Ok(()) => println!("Uninstalled from Codex."),
+        Err(e) => println!("Codex: could not write config: {e}"),
+    }
 }
 
 async fn cmd_serve(config_path: Option<&PathBuf>) -> Result<()> {

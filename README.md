@@ -106,20 +106,26 @@ cmcp list
 cmcp remove canva
 ```
 
-### Register with Claude
+### Register with Claude / Codex
 
 ```bash
-# Local scope (default — this machine)
+# Install into both Claude and Codex
 cmcp install
 
-# User scope (global)
-cmcp install --scope user
+# Only Claude
+cmcp install --target claude
 
-# Project scope
-cmcp install --scope project
+# Only Codex
+cmcp install --target codex
 
-# Uninstall
+# Claude user scope (global)
+cmcp install --target claude --scope user
+
+# Uninstall from both
 cmcp uninstall
+
+# Uninstall from one
+cmcp uninstall --target codex
 ```
 
 ## Transports
