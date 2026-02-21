@@ -67,8 +67,8 @@ enum Commands {
 
     /// Install cmcp into Claude Code (registers the MCP server).
     Install {
-        /// Scope: "project" (default) or "global"
-        #[arg(short, long, default_value = "project")]
+        /// Scope: "local" (this machine, default), "user" (global), or "project"
+        #[arg(short, long, default_value = "local")]
         scope: String,
     },
 
@@ -255,34 +255,35 @@ fn cmd_install(config_path: Option<&PathBuf>, scope: &str) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| config::default_config_path().unwrap());
 
+    // Match Claude Code's scopes exactly: local, user, project
     let scope_flag = match scope {
-        "global" => "--scope user",
-        _ => "--scope project",
+        "user" | "global" => "--scope user",
+        "project" => "--scope project",
+        _ => "--scope local",
     };
 
-    // Build the claude mcp add command
     let cmd = format!(
         "claude mcp add {scope_flag} --transport stdio code-mode-mcp -- {} serve --config {}",
         cmcp_bin.display(),
         config_path.display(),
     );
 
-    println!("Run this to register with Claude Code:\n");
-    println!("  {cmd}");
-    println!();
+    println!("Registering with Claude Code ({scope})...\n");
 
     // Try to run it automatically
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd)
+        .env_remove("CLAUDECODE")
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            println!("Installed! Restart Claude Code to use code-mode MCP.");
+            println!("Installed! Restart Claude Code to pick it up.");
         }
         _ => {
-            println!("Could not run automatically. Copy and run the command above.");
+            println!("Could not run automatically. Run this manually:\n");
+            println!("  {cmd}");
         }
     }
 
