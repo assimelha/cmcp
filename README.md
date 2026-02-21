@@ -1,62 +1,127 @@
 # cmcp — Code Mode MCP
 
-A proxy that aggregates all your MCP servers behind just **2 tools**: `search()` and `execute()`. Instead of registering dozens of MCP servers with Claude, register one.
+Stop registering dozens of MCP servers. Register **one proxy** that aggregates them all behind just **2 tools**.
 
-Inspired by [Cloudflare's code-mode MCP](https://blog.cloudflare.com/code-mode-mcp/).
+Your AI agent writes TypeScript to discover and call tools across every connected server — with full type safety, sandboxed execution, and automatic response truncation.
+
+Inspired by [Cloudflare's approach to code-mode MCP](https://blog.cloudflare.com/code-mode-mcp/).
+
+## Why
+
+The MCP tool explosion is real. Every new server adds 5-30 tools to your agent's context. With 6 servers that's potentially 180 tool definitions the model has to parse on every turn.
+
+cmcp flips the model: instead of N tools, you get **2**:
+
+| Tool | Purpose |
+|------|---------|
+| `search()` | Discover tools by writing TypeScript filter code |
+| `execute()` | Call tools across any server with typed async code |
+
+The agent writes code to interact with tools, not JSON blobs. This means:
+
+- **99% fewer tool definitions** in context (2 vs hundreds)
+- **Composable** — chain multiple tool calls in a single execution
+- **Type-safe** — auto-generated TypeScript declarations from JSON Schema
+- **Sandboxed** — code runs in a QuickJS engine with a 64 MB memory limit
+
+## Quick start
+
+```bash
+# Install
+cargo install --path .
+
+# Add servers (same syntax you already know)
+cmcp add canva https://mcp.canva.com/mcp
+cmcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
+
+# Register the proxy with Claude
+cmcp install
+```
+
+That's it. Restart Claude and you'll see `code-mode-mcp` with the `search` and `execute` tools.
+
+## Copy-paste from any MCP README
+
+Most MCP server docs give you a `claude mcp add` or `codex mcp add` command. Just prepend `cmcp`:
+
+```bash
+# Claude syntax — just prepend cmcp
+cmcp claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+cmcp claude mcp add --transport http canva https://mcp.canva.com/mcp
+
+# Codex syntax — same idea
+cmcp codex mcp add my-server -- npx docs-server@latest
+cmcp codex mcp add api-server --url https://api.example.com --bearer-token-env-var API_TOKEN
+```
 
 ## How it works
 
-Traditional setup — each server adds its own tools (can be hundreds):
+### search — discover tools
 
-```
-claude mcp add canva https://mcp.canva.com/mcp
-claude mcp add github -- npx -y @modelcontextprotocol/server-github
-claude mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
-```
+The agent writes TypeScript to filter the tool catalog:
 
-With cmcp — one proxy, two tools. Just prepend `cmcp` to any `claude mcp add` command:
+```typescript
+// Find screenshot-related tools
+return tools.filter(t => t.name.includes("screenshot"));
 
-```
-cmcp claude mcp add canva https://mcp.canva.com/mcp
-cmcp claude mcp add github -- npx -y @modelcontextprotocol/server-github
-cmcp install
-```
+// Find all tools from a specific server
+return tools.filter(t => t.server === "chrome-devtools");
 
-Or use Codex syntax:
-
-```
-cmcp codex mcp add github -- npx -y @modelcontextprotocol/server-github
-cmcp install
+// Get a summary of available servers
+const servers = [...new Set(tools.map(t => t.server))];
+return servers.map(s => ({
+  server: s,
+  tools: tools.filter(t => t.server === s).map(t => t.name)
+}));
 ```
 
-The agent writes TypeScript to discover and call tools across all connected servers:
+### execute — call tools
 
-```ts
-// search() — find relevant tools
-return tools.filter(t => t.name.includes("design"));
+Each server is a typed global object. The agent calls tools with `await`:
 
-// execute() — call tools with typed parameters
-const result = await canva.create_design({ title: "My Design" });
-return result;
+```typescript
+// Navigate and take a screenshot
+await chrome_devtools.navigate_page({ url: "https://example.com" });
+const screenshot = await chrome_devtools.take_screenshot({ format: "png" });
+return screenshot;
+
+// Chain multiple servers in one call
+const design = await canva.create_design({ title: "Q4 Report" });
+const issue = await github.create_issue({
+  owner: "myorg",
+  repo: "designs",
+  title: `New design: ${design.id}`
+});
+return { design: design.id, issue: issue.number };
 ```
 
-Types are auto-generated from tool schemas and stripped via [oxc](https://oxc.rs) before running in a sandboxed QuickJS engine.
+### Auto-generated types
 
-## Install
+cmcp generates TypeScript declarations from each tool's JSON Schema, so the agent knows exactly what parameters each tool accepts:
 
-```bash
-cargo install --path .
+```typescript
+declare const chrome_devtools: {
+  /** Navigate to a URL */
+  navigate_page(params: { url: string }): Promise<any>;
+  /** Take a screenshot */
+  take_screenshot(params: { format?: "png" | "jpeg"; quality?: number }): Promise<any>;
+};
+
+declare const canva: {
+  /** Create a new design */
+  create_design(params: { title: string; width?: number; height?: number }): Promise<any>;
+};
 ```
 
-## Usage
+Types are stripped via [oxc](https://oxc.rs) before execution in the QuickJS sandbox.
 
-### Add servers
+## Adding servers
 
 ```bash
 # HTTP (default when a URL is given)
 cmcp add canva https://mcp.canva.com/mcp
 
-# With auth token (use env: prefix to read from environment)
+# With auth (use env: prefix to read from environment at runtime)
 cmcp add --auth "env:CANVA_TOKEN" canva https://mcp.canva.com/mcp
 
 # With custom headers
@@ -72,114 +137,86 @@ cmcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
 cmcp add -e GITHUB_TOKEN=env:GITHUB_TOKEN --transport stdio github -- npx -y @modelcontextprotocol/server-github
 ```
 
-**Note:** Flags (`--auth`, `-H`, `-e`, `--transport`) must come before the server name and URL.
+Flags (`--auth`, `-H`, `-e`, `--transport`) must come **before** the server name.
 
-### Copy-paste from READMEs
+### Import from existing configs
 
-Most MCP server READMEs provide `claude mcp add` or `codex mcp add` commands. Just prepend `cmcp`:
-
-```bash
-# From a README:
-#   claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
-# Just prepend cmcp:
-cmcp claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
-
-# Claude HTTP:
-cmcp claude mcp add --transport http canva https://mcp.canva.com/mcp
-
-# Codex stdio:
-cmcp codex mcp add my-server --env TOKEN=secret -- docs-server --port 4000
-
-# Codex HTTP:
-cmcp codex mcp add api-server --url https://api.example.com --bearer-token-env-var API_TOKEN
-```
-
-### Import from Claude / Codex
-
-Already have MCP servers configured? Import them:
+Already have MCP servers configured in Claude or Codex? Import them:
 
 ```bash
-# Preview what would be imported
-cmcp import --dry-run
-
-# Import from all sources (Claude + Codex)
-cmcp import
-
-# Import from a specific source
-cmcp import --from claude
-cmcp import --from codex
-
-# Overwrite existing servers
-cmcp import --force
+cmcp import --dry-run     # Preview what would be imported
+cmcp import               # Import from all sources
+cmcp import --from claude # Only from Claude
+cmcp import --from codex  # Only from Codex
+cmcp import --force       # Overwrite existing servers
 ```
 
-Scanned locations:
-
-| Source | Files |
-|--------|-------|
+| Source | Scanned files |
+|--------|--------------|
 | Claude | `~/.claude.json`, `.mcp.json` |
-| Codex | `~/.codex/config.toml`, `.codex/config.toml` |
+| Codex  | `~/.codex/config.toml`, `.codex/config.toml` |
 
 ### Manage servers
 
 ```bash
-# List servers (names only)
-cmcp list --short
-
-# List servers with tools (connects to each)
-cmcp list
-
-# Remove a server
-cmcp remove canva
+cmcp list --short   # Names and transports
+cmcp list           # Full listing with tools (connects to each server)
+cmcp remove canva   # Remove a server
 ```
 
-### Register with Claude / Codex
+## Installing into Claude / Codex
 
 ```bash
-# Install into both Claude and Codex
-cmcp install
+cmcp install                         # Both Claude and Codex
+cmcp install --target claude         # Only Claude
+cmcp install --target codex          # Only Codex
+cmcp install --target claude --scope user  # Claude user scope (global)
 
-# Only Claude
-cmcp install --target claude
+cmcp uninstall                       # Remove from both
+cmcp uninstall --target codex        # Remove from one
+```
 
-# Only Codex
-cmcp install --target codex
+## Scopes
 
-# Claude user scope (global)
-cmcp install --target claude --scope user
+cmcp supports the same scoping as Claude:
 
-# Uninstall from both
-cmcp uninstall
+| Scope | Config file | Use case |
+|-------|-------------|----------|
+| `local` (default) | `~/.config/code-mode-mcp/config.toml` | Your personal servers |
+| `user` | Same as local | Same as local |
+| `project` | `.cmcp.toml` in project root | Project-specific servers |
 
-# Uninstall from one
-cmcp uninstall --target codex
+When serving, both configs are merged (project overrides user). Use `--scope` with `add`, `remove`, or `install`:
+
+```bash
+cmcp add --scope project local-server http://localhost:3000/mcp
 ```
 
 ## Transports
 
-| Transport | Flag | Use case |
-|-----------|------|----------|
-| `http` | `--transport http` (default for URLs) | Streamable HTTP MCP servers |
-| `sse` | `--transport sse` | Server-Sent Events MCP servers |
-| `stdio` | `--transport stdio` | Local process MCP servers |
+| Transport | Flag | When to use |
+|-----------|------|-------------|
+| `http` | default for URLs | Streamable HTTP MCP servers |
+| `sse` | `--transport sse` | Server-Sent Events servers |
+| `stdio` | `--transport stdio` (or auto-detected) | Local process servers |
 
 ## Auth
 
-Bearer tokens can be set per-server with `--auth`. Use the `env:` prefix to read from environment variables at runtime:
+Bearer tokens per server with `--auth`. Use `env:` to resolve from environment at runtime:
 
 ```bash
 cmcp add --auth "env:MY_TOKEN" myserver https://example.com/mcp
 ```
 
-Custom headers can be added with `-H`:
+Custom headers with `-H`:
 
 ```bash
 cmcp add -H "X-Api-Key: secret" -H "X-Org-Id: 123" myserver https://example.com/mcp
 ```
 
-## Config
+## Config format
 
-Config is stored at `~/.config/code-mode-mcp/config.toml`:
+Stored at `~/.config/code-mode-mcp/config.toml` (or `.cmcp.toml` for project scope):
 
 ```toml
 [servers.canva]
@@ -199,44 +236,32 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 GITHUB_TOKEN = "env:GITHUB_TOKEN"
 ```
 
-Use `--config <path>` to specify an alternate config file.
+## Response truncation
+
+Large tool results (DOM snapshots, API responses) are automatically truncated to ~40k characters (~10k tokens) to prevent context flooding. Both tools accept an optional `max_length` parameter:
+
+```typescript
+// The agent can control truncation per call
+// Or better: extract what you need in code
+const snapshot = await chrome_devtools.take_snapshot({});
+return snapshot.content[0].text.slice(0, 2000);
+```
 
 ## Limitations
 
-cmcp works best with **stateless tool servers** — servers where you just need to discover and call tools (Canva, GitHub, filesystem, Stripe, etc.).
+cmcp works best with **stateless tool servers** — servers where you discover and call tools (Canva, GitHub, filesystem, Stripe, browser automation, etc.).
 
-MCP servers that rely on **Claude hooks** (SessionStart, PostToolUse, Stop) or other lifecycle integrations outside the MCP protocol should be registered directly with Claude, not proxied through cmcp. Hooks are Claude shell commands triggered by events — they don't go through MCP and won't fire when proxied.
+**Not suitable for:**
 
-## Sandbox
+- **Hook-dependent servers** — MCP servers that rely on Claude hooks (SessionStart, PostToolUse, Stop) for lifecycle management. Hooks are shell commands triggered by Claude events and don't go through MCP, so they won't fire when proxied.
+- **Servers requiring interactive auth flows** — OAuth callbacks or browser-based login that need direct Claude integration.
 
-The `search()` and `execute()` tools accept **TypeScript** code. Types are stripped via [oxc](https://oxc.rs) and the resulting JavaScript runs in a QuickJS sandbox.
+When in doubt, check if the server's README mentions hooks or lifecycle events. If it does, register it directly with Claude instead.
 
-- **TypeScript support**: Write typed code — type declarations are auto-generated from tool schemas
-- **Memory limit**: 64 MB
-- **`console.log/warn/error/info/debug`**: Writes to stderr (visible in server logs)
-- **Typed server objects**: Each server is a typed global (e.g., `canva.create_design({ title: string })`)
-- **`tools` array**: Full tool catalog available for introspection
-- **Async/await**: Fully supported
+## Requirements
 
-### Auto-generated types
-
-cmcp generates TypeScript declarations from each tool's JSON Schema:
-
-```ts
-declare const canva: {
-  /** Create a new design */
-  create_design(params: { title: string; width?: number; height?: number }): Promise<any>;
-  /** List all designs */
-  list_designs(params: { limit?: number }): Promise<any>;
-};
-
-declare const github: {
-  /** Create an issue */
-  create_issue(params: { owner: string; repo: string; title: string; body?: string }): Promise<any>;
-};
-```
-
-This means agents know exactly what parameters each tool accepts when writing `execute()` code.
+- Rust 1.91+ (for oxc)
+- Claude and/or Codex CLI installed
 
 ## License
 
