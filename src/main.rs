@@ -926,9 +926,9 @@ async fn cmd_serve(config_path: Option<&PathBuf>) -> Result<()> {
     let (pool, catalog) = client::ClientPool::connect(cfg.servers).await?;
     info!("{}", catalog.summary());
 
-    let server = server::CodeModeServer::new(pool, catalog).await?;
+    let server = server::CodeModeServer::new(pool, catalog, config_path.cloned()).await?;
 
-    info!("starting MCP server on stdio");
+    info!("starting MCP server on stdio (hot-reload enabled)");
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
 
