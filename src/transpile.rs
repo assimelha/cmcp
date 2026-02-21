@@ -44,3 +44,46 @@ pub fn ts_to_js(source: &str) -> Result<String, String> {
     let js = Codegen::new().build(&program).code;
     Ok(js)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_return() {
+        let source = "async function __agent__() {\nreturn tools\n}";
+        let result = ts_to_js(source);
+        assert!(result.is_ok(), "failed: {:?}", result);
+        let js = result.unwrap();
+        assert!(js.contains("return tools"), "output: {js}");
+    }
+
+    #[test]
+    fn test_with_type_declarations() {
+        let source = r#"
+declare const tools: Array<{ server: string; name: string; description: string; input_schema: any }>;
+
+declare const chrome_devtools: {
+  /** Take a screenshot */
+  take_screenshot(params: { url: string }): Promise<any>;
+};
+
+async function __agent__() {
+return tools.filter(t => t.name.includes("screenshot"))
+}
+"#;
+        let result = ts_to_js(source);
+        assert!(result.is_ok(), "failed: {:?}", result);
+        let js = result.unwrap();
+        assert!(js.contains("return tools.filter"), "output: {js}");
+        // Type declarations should be stripped
+        assert!(!js.contains("declare"), "declarations not stripped: {js}");
+    }
+
+    #[test]
+    fn test_arrow_function() {
+        let source = "async function __agent__() {\nconst result = tools.map(t => ({ server: t.server, name: t.name }));\nreturn result;\n}";
+        let result = ts_to_js(source);
+        assert!(result.is_ok(), "failed: {:?}", result);
+    }
+}

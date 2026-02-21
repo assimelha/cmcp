@@ -161,8 +161,11 @@ impl Sandbox {
             server_names.sort();
 
             for name in &server_names {
+                // Convert server names with hyphens to valid JS identifiers
+                // e.g. "chrome-devtools" -> "chrome_devtools"
+                let js_name = name.replace('-', "_");
                 setup.push_str(&format!(
-                    r#"const {name} = new Proxy({{}}, {{
+                    r#"const {js_name} = new Proxy({{}}, {{
   get(_, tool) {{
     return async (args = {{}}) => {{
       const resultJson = await __call_tool("{name}", tool, JSON.stringify(args));
@@ -171,6 +174,7 @@ impl Sandbox {
   }}
 }});
 "#,
+                    js_name = js_name,
                     name = name,
                 ));
             }
