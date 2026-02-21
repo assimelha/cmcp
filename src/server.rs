@@ -12,16 +12,25 @@ use crate::catalog::Catalog;
 use crate::client::ClientPool;
 use crate::sandbox::Sandbox;
 
+/// Default max response length in characters (~10k tokens).
+const DEFAULT_MAX_LENGTH: usize = 40_000;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchRequest {
     #[schemars(description = "TypeScript code to filter/explore the tools catalog. A typed `tools` array is available with fields: { server, name, description, input_schema }. Must return a value. Example: return tools.filter(t => t.description.toLowerCase().includes(\"design\"))")]
     code: String,
+    #[schemars(description = "Max response length in characters. Default: 40000. Use your code to extract only what you need rather than increasing this.")]
+    #[serde(default)]
+    max_length: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ExecuteRequest {
     #[schemars(description = "TypeScript code to execute. Each connected server is a typed global object where every tool is an async function. Type declarations are auto-generated from tool schemas. Example: const result = await canva.create_design({ type: \"poster\" }); return result;")]
     code: String,
+    #[schemars(description = "Max response length in characters. Default: 40000. Use your code to extract only what you need rather than increasing this.")]
+    #[serde(default)]
+    max_length: Option<usize>,
 }
 
 /// The code-mode MCP server that exposes `search` and `execute` tools.
@@ -56,11 +65,14 @@ impl CodeModeServer {
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<CallToolResult, McpError> {
+        let max_len = req.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
         let sandbox = self.sandbox.lock().await;
         match sandbox.search(&req.code).await {
             Ok(result) => {
                 let text = serde_json::to_string_pretty(&result).unwrap_or_default();
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    truncate_response(text, max_len),
+                )]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "search error: {e}"
@@ -76,17 +88,36 @@ impl CodeModeServer {
         &self,
         Parameters(req): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
+        let max_len = req.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
         let sandbox = self.sandbox.lock().await;
         match sandbox.execute(&req.code).await {
             Ok(result) => {
                 let text = serde_json::to_string_pretty(&result).unwrap_or_default();
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    truncate_response(text, max_len),
+                )]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "execute error: {e}"
             ))])),
         }
     }
+}
+
+/// Truncate a response to `max_len` characters, appending a notice if truncated.
+fn truncate_response(text: String, max_len: usize) -> String {
+    if max_len == 0 || text.len() <= max_len {
+        return text;
+    }
+    // Find a clean break point (newline) near the limit.
+    let cut = text[..max_len]
+        .rfind('\n')
+        .unwrap_or(max_len);
+    let truncated = &text[..cut];
+    let remaining = text.len() - cut;
+    format!(
+        "{truncated}\n\n[truncated — {remaining} chars omitted. Use your code to extract only the data you need, or increase max_length.]"
+    )
 }
 
 #[tool_handler]
