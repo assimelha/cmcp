@@ -22,18 +22,18 @@ cmcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
 cmcp install
 ```
 
-The agent writes JavaScript to discover and call tools across all connected servers:
+The agent writes TypeScript to discover and call tools across all connected servers:
 
-```js
+```ts
 // search() — find relevant tools
 return tools.filter(t => t.name.includes("design"));
 
-// execute() — call tools via JS proxy objects
+// execute() — call tools with typed parameters
 const result = await canva.create_design({ title: "My Design" });
 return result;
 ```
 
-Code runs in a sandboxed QuickJS engine with a 64 MB memory limit.
+Types are auto-generated from tool schemas and stripped via [oxc](https://oxc.rs) before running in a sandboxed QuickJS engine.
 
 ## Install
 
@@ -176,13 +176,34 @@ MCP servers that rely on **Claude Code hooks** (SessionStart, PostToolUse, Stop)
 
 ## Sandbox
 
-The `execute()` tool runs agent-written JavaScript in a QuickJS sandbox:
+The `search()` and `execute()` tools accept **TypeScript** code. Types are stripped via [oxc](https://oxc.rs) and the resulting JavaScript runs in a QuickJS sandbox.
 
+- **TypeScript support**: Write typed code — type declarations are auto-generated from tool schemas
 - **Memory limit**: 64 MB
 - **`console.log/warn/error/info/debug`**: Writes to stderr (visible in server logs)
-- **Server proxies**: Each configured server is available as a global object (e.g., `canva.tool_name(args)`)
+- **Typed server objects**: Each server is a typed global (e.g., `canva.create_design({ title: string })`)
 - **`tools` array**: Full tool catalog available for introspection
 - **Async/await**: Fully supported
+
+### Auto-generated types
+
+cmcp generates TypeScript declarations from each tool's JSON Schema:
+
+```ts
+declare const canva: {
+  /** Create a new design */
+  create_design(params: { title: string; width?: number; height?: number }): Promise<any>;
+  /** List all designs */
+  list_designs(params: { limit?: number }): Promise<any>;
+};
+
+declare const github: {
+  /** Create an issue */
+  create_issue(params: { owner: string; repo: string; title: string; body?: string }): Promise<any>;
+};
+```
+
+This means agents know exactly what parameters each tool accepts when writing `execute()` code.
 
 ## License
 

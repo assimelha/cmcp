@@ -14,13 +14,13 @@ use crate::sandbox::Sandbox;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchRequest {
-    #[schemars(description = "JavaScript code to filter/explore the tools catalog. A `tools` array is available with fields: { server, name, description, input_schema }. Must return a value. Example: return tools.filter(t => t.description.toLowerCase().includes(\"design\"))")]
+    #[schemars(description = "TypeScript code to filter/explore the tools catalog. A typed `tools` array is available with fields: { server, name, description, input_schema }. Must return a value. Example: return tools.filter(t => t.description.toLowerCase().includes(\"design\"))")]
     code: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ExecuteRequest {
-    #[schemars(description = "JavaScript code to execute. Each connected server is a global proxy object where every tool is an async function. Example: const result = await canva.create_design({ type: \"poster\" }); return result;")]
+    #[schemars(description = "TypeScript code to execute. Each connected server is a typed global object where every tool is an async function. Type declarations are auto-generated from tool schemas. Example: const result = await canva.create_design({ type: \"poster\" }); return result;")]
     code: String,
 }
 
@@ -50,7 +50,7 @@ impl CodeModeServer {
 impl CodeModeServer {
     #[tool(
         name = "search",
-        description = "Search across all tools from all connected MCP servers. Write JavaScript code to filter the tool catalog. A `tools` array is available with { server, name, description, input_schema } fields."
+        description = "Search across all tools from all connected MCP servers. Write TypeScript code to filter the tool catalog. A typed `tools` array is available with { server, name, description, input_schema } fields."
     )]
     async fn search(
         &self,
@@ -70,7 +70,7 @@ impl CodeModeServer {
 
     #[tool(
         name = "execute",
-        description = "Execute JavaScript code that calls tools across all connected MCP servers. Each server is a global proxy object (e.g. `canva`, `figma`) where every tool is an async function: `await server.tool_name(args)`."
+        description = "Execute TypeScript code that calls tools across all connected MCP servers. Each server is a typed global object (e.g. `canva`, `figma`) where every tool is an async function with typed parameters: `await server.tool_name({ param: value })`."
     )]
     async fn execute(
         &self,
@@ -96,9 +96,9 @@ impl ServerHandler for CodeModeServer {
         ServerInfo {
             instructions: Some(format!(
                 "Code Mode MCP Proxy — {summary}.\n\n\
-                 Use `search` to discover available tools by writing JS filter code.\n\
-                 Use `execute` to call tools across servers by writing JS code.\n\n\
-                 Each connected server is a proxy object in `execute`.\n\
+                 Use `search` to discover available tools by writing TypeScript filter code.\n\
+                 Use `execute` to call tools across servers by writing TypeScript code.\n\n\
+                 Each connected server is a typed object in `execute` with auto-generated type declarations from tool schemas.\n\
                  Example: `await canva.create_design({{ type: \"poster\" }})`"
             )),
             capabilities: ServerCapabilities::builder().enable_tools().build(),

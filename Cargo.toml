@@ -47,6 +47,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # JSON Schema generation (for rmcp tool parameters)
 schemars = "1"
 
+# TypeScript transpilation (strip types -> JS)
+oxc = { version = "0.114", features = ["semantic", "transformer", "codegen"] }
+
 # HTTP types (for custom headers)
 http = "1"
 

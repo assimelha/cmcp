@@ -4,6 +4,7 @@ mod config;
 mod import;
 mod sandbox;
 mod server;
+mod transpile;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

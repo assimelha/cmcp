@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::catalog::Catalog;
 use crate::client::ClientPool;
+use crate::transpile;
 
 /// JS sandbox that executes agent-written code with proxied MCP tool calls.
 pub struct Sandbox {
@@ -77,10 +78,10 @@ impl Sandbox {
         })
     }
 
-    /// Execute a `search()` call — agent JS code that filters the tool catalog.
+    /// Execute a `search()` call — agent TypeScript code that filters the tool catalog.
     pub async fn search(&self, code: &str) -> Result<serde_json::Value> {
         let catalog_json_str = serde_json::to_string(&self.catalog.to_json_value())?;
-        let code = code.to_string();
+        let code = transpile_agent_code(code, &self.catalog.type_declarations())?;
 
         let result = async_with!(self.ctx => |ctx| {
             let tools_val: Value = ctx.json_parse(catalog_json_str)
@@ -108,11 +109,11 @@ impl Sandbox {
         Ok(result)
     }
 
-    /// Execute an `execute()` call — agent JS code that calls tools across servers.
+    /// Execute an `execute()` call — agent TypeScript code that calls tools across servers.
     pub async fn execute(&self, code: &str) -> Result<serde_json::Value> {
         let pool = self.pool.clone();
         let catalog = self.catalog.clone();
-        let code = code.to_string();
+        let code = transpile_agent_code(code, &self.catalog.type_declarations())?;
 
         let result = async_with!(self.ctx => |ctx| {
             // Inject __call_tool as an async native function.
@@ -215,4 +216,12 @@ fn stringify_result<'js>(
 
     serde_json::from_str(&json_std_str)
         .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
+}
+
+/// Prepend type declarations and transpile TypeScript to JavaScript.
+fn transpile_agent_code(code: &str, type_decls: &str) -> Result<String> {
+    // Combine type declarations with agent code so oxc sees the full context.
+    let ts_source = format!("{type_decls}\n{code}");
+    transpile::ts_to_js(&ts_source)
+        .map_err(|e| anyhow::anyhow!("TypeScript transpile error: {e}"))
 }
