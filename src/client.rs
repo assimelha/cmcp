@@ -196,15 +196,6 @@ impl ClientPool {
         }
     }
 
-    /// Shut down all connections.
-    pub async fn shutdown(self) {
-        for (name, upstream_mutex) in self.servers {
-            let upstream = upstream_mutex.into_inner();
-            if let Err(e) = upstream.service.cancel().await {
-                tracing::warn!(server = %name, error = %e, "error shutting down");
-            }
-        }
-    }
 }
 
 /// Resolve "env:VAR_NAME" references to environment variable values.

@@ -30,7 +30,7 @@ struct SearchRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ExecuteRequest {
-    #[schemars(description = "TypeScript code to execute. Each connected server is a typed global object where every tool is an async function. Type declarations are auto-generated from tool schemas. Example: const result = await canva.create_design({ type: \"poster\" }); return result;")]
+    #[schemars(description = "TypeScript code to execute. Each connected server is a typed global object where every tool is an async function. Type declarations are auto-generated from tool schemas. Chain calls sequentially: await chrome_devtools.navigate_page({ url: \"https://example.com\" }); const screenshot = await chrome_devtools.take_screenshot({ format: \"png\" }); return screenshot; Or run calls in parallel with Promise.all: const [issues, designs] = await Promise.all([github.list_issues({ repo: \"myorg/app\" }), canva.list_designs({})]);")]
     code: String,
     #[schemars(description = "Max response length in characters. Default: 40000. Use your code to extract only what you need rather than increasing this.")]
     #[serde(default)]
@@ -66,7 +66,7 @@ impl CodeModeServer {
         config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let catalog = Arc::new(catalog);
-        let pool = Arc::new(Mutex::new(pool));
+        let pool = Arc::new(pool);
         let sandbox = Sandbox::new(pool, catalog.clone()).await?;
 
         // Snapshot current config file mtimes.
@@ -126,7 +126,7 @@ impl CodeModeServer {
         info!("{}", catalog.summary());
 
         let catalog = Arc::new(catalog);
-        let pool = Arc::new(Mutex::new(pool));
+        let pool = Arc::new(pool);
 
         let sandbox = match Sandbox::new(pool, catalog.clone()).await {
             Ok(s) => s,
@@ -180,7 +180,7 @@ impl CodeModeServer {
 
     #[tool(
         name = "execute",
-        description = "Execute TypeScript code that calls tools across all connected MCP servers. Each server is a typed global object (e.g. `canva`, `figma`) where every tool is an async function with typed parameters: `await server.tool_name({ param: value })`."
+        description = "Execute TypeScript code that calls tools across all connected MCP servers. Each server is a typed global object (e.g. `canva`, `figma`) where every tool is an async function with typed parameters: `await server.tool_name({ param: value })`. Chain calls sequentially or run them in parallel with Promise.all across different servers."
     )]
     async fn execute(
         &self,

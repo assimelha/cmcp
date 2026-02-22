@@ -4,8 +4,6 @@ use anyhow::Result;
 use rquickjs::context::EvalOptions;
 use rquickjs::prelude::Async;
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Function, Promise, Value, async_with};
-use tokio::sync::Mutex;
-
 use crate::catalog::Catalog;
 use crate::client::ClientPool;
 use crate::transpile;
@@ -15,7 +13,7 @@ pub struct Sandbox {
     #[allow(dead_code)]
     rt: AsyncRuntime,
     ctx: AsyncContext,
-    pool: Arc<Mutex<ClientPool>>,
+    pool: Arc<ClientPool>,
     catalog: Arc<Catalog>,
 }
 
@@ -49,7 +47,7 @@ const console = {
 "#;
 
 impl Sandbox {
-    pub async fn new(pool: Arc<Mutex<ClientPool>>, catalog: Arc<Catalog>) -> Result<Self> {
+    pub async fn new(pool: Arc<ClientPool>, catalog: Arc<Catalog>) -> Result<Self> {
         let rt = AsyncRuntime::new()?;
         rt.set_memory_limit(64 * 1024 * 1024).await; // 64 MB
         let ctx = AsyncContext::full(&rt).await?;
@@ -132,8 +130,7 @@ impl Sandbox {
                                 serde_json::from_str(&params_json)
                                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-                            let pool_guard = pool_inner.lock().await;
-                            match pool_guard.call_tool(&server, &tool, params).await {
+                            match pool_inner.call_tool(&server, &tool, params).await {
                                 Ok(call_result) => {
                                     serde_json::to_string(&call_result)
                                         .unwrap_or_else(|_| "null".to_owned())
@@ -223,6 +220,137 @@ fn stringify_result<'js>(
 
     serde_json::from_str(&json_std_str)
         .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::client::ClientPool;
+
+    async fn test_sandbox() -> Sandbox {
+        let (pool, catalog) = ClientPool::connect(HashMap::new()).await.unwrap();
+        Sandbox::new(Arc::new(pool), Arc::new(catalog)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_execute_basic() {
+        let sandbox = test_sandbox().await;
+        let result = sandbox.execute("return 1 + 2;").await.unwrap();
+        assert_eq!(result, serde_json::json!(3));
+    }
+
+    #[tokio::test]
+    async fn test_execute_promise_all() {
+        let sandbox = test_sandbox().await;
+        let result = sandbox.execute(r#"
+            const results = await Promise.all([
+                Promise.resolve("a"),
+                Promise.resolve("b"),
+                Promise.resolve("c"),
+            ]);
+            return results;
+        "#).await.unwrap();
+        assert_eq!(result, serde_json::json!(["a", "b", "c"]));
+    }
+
+    #[tokio::test]
+    async fn test_execute_chaining() {
+        let sandbox = test_sandbox().await;
+        let result = sandbox.execute(r#"
+            const a = await Promise.resolve(10);
+            const b = await Promise.resolve(a * 2);
+            const c = await Promise.resolve(b + 5);
+            return c;
+        "#).await.unwrap();
+        assert_eq!(result, serde_json::json!(25));
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_nonexistent_server_returns_error() {
+        let sandbox = test_sandbox().await;
+        let result = sandbox.execute(r#"
+            const r = await __call_tool("no_such_server", "some_tool", "{}");
+            return JSON.parse(r);
+        "#).await.unwrap();
+        assert!(result.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_promise_all_call_tool_concurrent() {
+        // Verify that Promise.all with multiple __call_tool calls all complete
+        // without deadlocking. With the old Arc<Mutex<ClientPool>>, concurrent
+        // calls would serialize on the pool mutex.
+        let sandbox = test_sandbox().await;
+        let result = sandbox.execute(r#"
+            const results = await Promise.all([
+                __call_tool("server_a", "tool1", "{}"),
+                __call_tool("server_b", "tool2", "{}"),
+                __call_tool("server_c", "tool3", "{}"),
+            ]);
+            return results.map(r => JSON.parse(r));
+        "#).await.unwrap();
+
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        // All should return errors (servers don't exist), but none should deadlock.
+        for item in arr {
+            assert!(item.get("error").is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_promise_all_parallel_timing() {
+        // Verify that async operations in Promise.all run concurrently, not sequentially.
+        // Uses a raw QuickJS runtime with injected async sleep to measure timing.
+        let rt = AsyncRuntime::new().unwrap();
+        let ctx = AsyncContext::full(&rt).await.unwrap();
+
+        let start = std::time::Instant::now();
+
+        async_with!(ctx => |ctx| {
+            let sleep_fn = Function::new(
+                ctx.clone(),
+                Async(move |ms: f64| {
+                    async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(ms as u64)).await;
+                        "done".to_string()
+                    }
+                }),
+            ).unwrap();
+            ctx.globals().set("sleep_ms", sleep_fn).unwrap();
+
+            let code = r#"(async () => {
+                const results = await Promise.all([
+                    sleep_ms(100),
+                    sleep_ms(100),
+                    sleep_ms(100),
+                ]);
+                return results;
+            })()"#;
+
+            let promise: Promise = ctx.eval_with_options(code, eval_opts())
+                .catch(&ctx)
+                .unwrap();
+
+            let _result: Value = promise.into_future::<Value>()
+                .await
+                .catch(&ctx)
+                .unwrap();
+
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+
+        let elapsed = start.elapsed();
+        // 3x 100ms in parallel should be ~100ms. If sequential, ~300ms.
+        assert!(
+            elapsed.as_millis() < 200,
+            "Promise.all took {}ms — expected <200ms for parallel execution",
+            elapsed.as_millis()
+        );
+    }
 }
 
 /// Prepend type declarations, wrap in async function, and transpile TypeScript to JavaScript.
