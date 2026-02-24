@@ -59,6 +59,10 @@ fn file_mtime(path: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
+fn user_config_mtime() -> Option<SystemTime> {
+    config::default_config_path().ok().and_then(|p| file_mtime(&p))
+}
+
 impl CodeModeServer {
     pub async fn new(
         pool: ClientPool,
@@ -70,9 +74,7 @@ impl CodeModeServer {
         let sandbox = Sandbox::new(pool, catalog.clone()).await?;
 
         // Snapshot current config file mtimes.
-        let user_mtime = config::default_config_path()
-            .ok()
-            .and_then(|p| file_mtime(&p));
+        let user_mtime = user_config_mtime();
         let project_mtime = file_mtime(&config::project_config_path());
 
         Ok(Self {
@@ -92,9 +94,7 @@ impl CodeModeServer {
         let needs_reload = {
             let state = self.state.lock().await;
 
-            let current_user_mtime = config::default_config_path()
-                .ok()
-                .and_then(|p| file_mtime(&p));
+            let current_user_mtime = user_config_mtime();
             let current_project_mtime = file_mtime(&config::project_config_path());
 
             current_user_mtime != state.user_mtime
@@ -136,9 +136,7 @@ impl CodeModeServer {
             }
         };
 
-        let user_mtime = config::default_config_path()
-            .ok()
-            .and_then(|p| file_mtime(&p));
+        let user_mtime = user_config_mtime();
         let project_mtime = file_mtime(&config::project_config_path());
 
         let mut state = self.state.lock().await;

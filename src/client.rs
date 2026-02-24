@@ -88,22 +88,13 @@ impl ClientPool {
         config: &ServerConfig,
     ) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>)> {
         let service = match config {
-            ServerConfig::Http { url, auth, headers } => {
+            ServerConfig::Http { url, auth, headers } | ServerConfig::Sse { url, auth, headers } => {
                 let transport_config = Self::build_http_config(url, auth, headers);
                 let transport =
                     rmcp::transport::StreamableHttpClientTransport::from_config(transport_config);
                 ().serve(transport)
                     .await
-                    .with_context(|| format!("HTTP connection to {name} failed"))?
-            }
-            ServerConfig::Sse { url, auth, headers } => {
-                // SSE uses the same streamable HTTP transport — the protocol auto-negotiates.
-                let transport_config = Self::build_http_config(url, auth, headers);
-                let transport =
-                    rmcp::transport::StreamableHttpClientTransport::from_config(transport_config);
-                ().serve(transport)
-                    .await
-                    .with_context(|| format!("SSE connection to {name} failed"))?
+                    .with_context(|| format!("connection to {name} failed"))?
             }
             ServerConfig::Stdio {
                 command,
@@ -144,16 +135,17 @@ impl ClientPool {
         let mut upstream = upstream_mutex.lock().await;
 
         let tool_name_owned = tool_name.to_string();
+        let make_params = |name: String| CallToolRequestParams {
+            meta: None,
+            name: name.into(),
+            arguments: arguments.as_object().cloned(),
+            task: None,
+        };
 
         // First attempt
         let result = upstream
             .service
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: tool_name_owned.clone().into(),
-                arguments: arguments.as_object().cloned(),
-                task: None,
-            })
+            .call_tool(make_params(tool_name_owned.clone()))
             .await;
 
         match result {
@@ -173,12 +165,7 @@ impl ClientPool {
                         // Retry the tool call
                         let retry = upstream
                             .service
-                            .call_tool(CallToolRequestParams {
-                                meta: None,
-                                name: tool_name_owned.into(),
-                                arguments: arguments.as_object().cloned(),
-                                task: None,
-                            })
+                            .call_tool(make_params(tool_name_owned))
                             .await
                             .with_context(|| {
                                 format!("tool call {server_name}.{tool_name} failed after reconnect")
