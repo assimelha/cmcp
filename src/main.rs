@@ -18,6 +18,27 @@ use tracing_subscriber::EnvFilter;
 
 use config::ServerConfig;
 
+/// Format transport info for display (used by `list` and `import`).
+fn format_transport_info(config: &ServerConfig) -> String {
+    match config {
+        ServerConfig::Http { url, .. } => format!("http  {url}"),
+        ServerConfig::Sse { url, .. } => format!("sse   {url}"),
+        ServerConfig::Stdio { command, args, .. } => {
+            format!("stdio {} {}", command, args.join(" "))
+        }
+    }
+}
+
+/// Print an "Added" or "Updated" message depending on whether the server already existed.
+fn print_server_saved(name: &str, path: &std::path::Path, already_exists: bool) {
+    if already_exists {
+        println!("Updated server \"{name}\"");
+    } else {
+        println!("Added server \"{name}\"");
+    }
+    println!("Config: {}", path.display());
+}
+
 #[derive(Parser)]
 #[command(
     name = "cmcp",
@@ -222,13 +243,7 @@ fn cmd_add(
     cfg.add_server(name.clone(), server_config);
     cfg.save_to(&path)?;
 
-    if already_exists {
-        println!("Updated server \"{name}\"");
-    } else {
-        println!("Added server \"{name}\"");
-    }
-
-    println!("Config: {}", path.display());
+    print_server_saved(&name, &path, already_exists);
     Ok(())
 }
 
@@ -241,25 +256,14 @@ fn resolve_config_path(explicit: Option<&PathBuf>, scope: config::Scope) -> Resu
     }
 }
 
-/// Parse "Key: Value" or "Key=Value" header strings into a HashMap.
-fn parse_headers(raw: &[String]) -> HashMap<String, String> {
+fn parse_key_value(raw: &[String], separators: &[char]) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    for h in raw {
-        if let Some((k, v)) = h.split_once(':') {
-            map.insert(k.trim().to_string(), v.trim().to_string());
-        } else if let Some((k, v)) = h.split_once('=') {
-            map.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
-    map
-}
-
-/// Parse "KEY=VALUE" env strings into a HashMap.
-fn parse_envs(raw: &[String]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for e in raw {
-        if let Some((k, v)) = e.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
+    for s in raw {
+        for &sep in separators {
+            if let Some((k, v)) = s.split_once(sep) {
+                map.insert(k.trim().to_string(), v.trim().to_string());
+                break;
+            }
         }
     }
     map
@@ -271,26 +275,21 @@ fn parse_envs(raw: &[String]) -> HashMap<String, String> {
 fn strip_foreign_flags(args: &[String]) -> (Vec<String>, Option<String>) {
     let mut cleaned = Vec::new();
     let mut extracted_transport = None;
-    let mut i = 0;
+    let mut iter = args.iter().peekable();
 
-    while i < args.len() {
-        let arg = &args[i];
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             // --scope is a Claude CLI flag, not a cmcp flag. Skip it + its value.
-            "--scope" => {
-                i += 1; // skip the value too
-            }
+            "--scope" => { iter.next(); }
             // --transport may appear in the trailing args if user put it after the name.
             // Extract its value so we can use it.
-            "--transport" if i + 1 < args.len() => {
-                extracted_transport = Some(args[i + 1].clone());
-                i += 1; // skip the value too
+            "--transport" => {
+                if let Some(val) = iter.next() {
+                    extracted_transport = Some(val.clone());
+                }
             }
-            _ => {
-                cleaned.push(arg.clone());
-            }
+            _ => cleaned.push(arg.clone()),
         }
-        i += 1;
     }
 
     (cleaned, extracted_transport)
@@ -329,7 +328,7 @@ fn parse_server_args(
             Ok(ServerConfig::Http {
                 url,
                 auth,
-                headers: parse_headers(&headers),
+                headers: parse_key_value(&headers, &[':', '=']),
             })
         }
         "sse" => {
@@ -340,7 +339,7 @@ fn parse_server_args(
             Ok(ServerConfig::Sse {
                 url,
                 auth,
-                headers: parse_headers(&headers),
+                headers: parse_key_value(&headers, &[':', '=']),
             })
         }
         "stdio" => {
@@ -360,7 +359,7 @@ fn parse_server_args(
             Ok(ServerConfig::Stdio {
                 command,
                 args: cmd_args,
-                env: parse_envs(&envs),
+                env: parse_key_value(&envs, &['=']),
             })
         }
         other => anyhow::bail!("unknown transport \"{other}\". Use: http, stdio, or sse"),
@@ -391,13 +390,7 @@ async fn cmd_list(config_path: Option<&PathBuf>, short: bool) -> Result<()> {
 
     if short {
         for (name, server_config) in &cfg.servers {
-            let transport_info = match server_config {
-                ServerConfig::Http { url, .. } => format!("http  {url}"),
-                ServerConfig::Sse { url, .. } => format!("sse   {url}"),
-                ServerConfig::Stdio { command, args, .. } => {
-                    format!("stdio {} {}", command, args.join(" "))
-                }
-            };
+            let transport_info = format_transport_info(server_config);
             println!("  {name:20} {transport_info}");
         }
         return Ok(());
@@ -463,13 +456,7 @@ fn cmd_import(
     for server in &discovered {
         let exists = cfg.servers.contains_key(&server.name);
 
-        let transport_info = match &server.config {
-            ServerConfig::Http { url, .. } => format!("http  {url}"),
-            ServerConfig::Sse { url, .. } => format!("sse   {url}"),
-            ServerConfig::Stdio { command, args, .. } => {
-                format!("stdio {} {}", command, args.join(" "))
-            }
-        };
+        let transport_info = format_transport_info(&server.config);
 
         if exists && !force {
             if dry_run {
@@ -793,13 +780,7 @@ fn cmd_passthrough_claude(config_path: Option<&PathBuf>, raw_args: &[String]) ->
     cfg.add_server(name.clone(), server_config);
     cfg.save_to(&path)?;
 
-    if exists {
-        println!("Updated server \"{name}\"");
-    } else {
-        println!("Added server \"{name}\"");
-    }
-
-    println!("Config: {}", path.display());
+    print_server_saved(&name, &path, exists);
     Ok(())
 }
 
@@ -897,16 +878,10 @@ fn cmd_passthrough_codex(config_path: Option<&PathBuf>, raw_args: &[String]) -> 
     cfg.add_server(name.clone(), server_config);
     cfg.save(config_path)?;
 
-    if exists {
-        println!("Updated server \"{name}\"");
-    } else {
-        println!("Added server \"{name}\"");
-    }
-
     let path = config_path
         .cloned()
         .unwrap_or_else(|| config::default_config_path().unwrap());
-    println!("Config: {}", path.display());
+    print_server_saved(&name, &path, exists);
     Ok(())
 }
 

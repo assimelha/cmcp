@@ -83,11 +83,8 @@ impl Catalog {
                     out.push_str(&format!("  /** {desc} */\n"));
                 }
                 // Quote tool names that aren't valid identifiers.
-                let name_str = if is_valid_js_ident(&tool.name) {
-                    format!("{name}(params: {{ {params_type} }}): Promise<any>;", name = tool.name)
-                } else {
-                    format!("\"{name}\"(params: {{ {params_type} }}): Promise<any>;", name = tool.name)
-                };
+                let prop_name = js_property_name(&tool.name);
+                let name_str = format!("{prop_name}(params: {{ {params_type} }}): Promise<any>;");
                 out.push_str(&format!("  {name_str}\n"));
             }
             out.push_str("};\n\n");
@@ -134,11 +131,7 @@ fn schema_to_ts_params(schema: &serde_json::Value) -> String {
             "?"
         };
         // Quote property names that aren't valid JS identifiers.
-        let name_str = if is_valid_js_ident(name) {
-            format!("{name}{optional}")
-        } else {
-            format!("\"{name}\"{optional}")
-        };
+        let name_str = format!("{}{optional}", js_property_name(name));
         params.push(format!("{name_str}: {ts_type}"));
     }
 
@@ -190,6 +183,10 @@ fn json_type_to_ts(schema: &serde_json::Value) -> String {
         }
         _ => "any".to_string(),
     }
+}
+
+fn js_property_name(name: &str) -> String {
+    if is_valid_js_ident(name) { name.to_string() } else { format!("\"{name}\"") }
 }
 
 /// Check if a string is a valid JavaScript identifier (simplified).
