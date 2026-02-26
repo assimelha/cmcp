@@ -100,22 +100,27 @@ impl Config {
         Self::load_from(&path)
     }
 
-    /// Load merged config: user/local config + project config overlaid.
-    /// Project servers override user servers with the same name.
+    /// Load merged config: user config as base, then overlay project and explicit configs.
+    /// Later configs override earlier ones with the same server name.
+    /// Priority (lowest to highest): user → project (.cmcp.toml) → explicit_path
     pub fn load_merged(explicit_path: Option<&PathBuf>) -> Result<Self> {
-        // Start with user/local config.
-        let mut merged = if let Some(p) = explicit_path {
-            Self::load_from(p)?
-        } else {
-            let user_path = default_config_path()?;
-            Self::load_from(&user_path)?
-        };
+        // Always start with user config as the base.
+        let user_path = default_config_path()?;
+        let mut merged = Self::load_from(&user_path)?;
 
-        // Overlay project config if it exists.
+        // Overlay project config (.cmcp.toml) if it exists.
         let project_path = project_config_path();
         if project_path.exists() {
             let project = Self::load_from(&project_path)?;
             for (name, config) in project.servers {
+                merged.servers.insert(name, config);
+            }
+        }
+
+        // Overlay explicit config (e.g. .cas/proxy.toml) if provided.
+        if let Some(p) = explicit_path {
+            let explicit = Self::load_from(p)?;
+            for (name, config) in explicit.servers {
                 merged.servers.insert(name, config);
             }
         }

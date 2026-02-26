@@ -5,6 +5,10 @@ edition = "2024"
 description = "A code-mode MCP proxy that aggregates multiple MCP servers behind search() + execute()"
 license = "MIT"
 
+[lib]
+name = "cmcp_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cmcp"
 path = "src/main.rs"

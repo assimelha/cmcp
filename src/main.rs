@@ -1,22 +1,17 @@
-mod catalog;
-mod client;
-mod config;
 mod import;
-mod sandbox;
 mod server;
-mod transpile;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use cmcp_core::config;
+use cmcp_core::config::ServerConfig;
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-
-use config::ServerConfig;
 
 #[derive(Parser)]
 #[command(
@@ -409,7 +404,7 @@ async fn cmd_list(config_path: Option<&PathBuf>, short: bool) -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let (_pool, catalog) = client::ClientPool::connect(cfg.servers).await?;
+    let (_pool, catalog) = cmcp_core::client::ClientPool::connect(cfg.servers).await?;
 
     println!("{}\n", catalog.summary());
     for entry in catalog.entries() {
@@ -923,10 +918,7 @@ async fn cmd_serve(config_path: Option<&PathBuf>) -> Result<()> {
         "connecting to upstream servers (user + project configs merged)"
     );
 
-    let (pool, catalog) = client::ClientPool::connect(cfg.servers).await?;
-    info!("{}", catalog.summary());
-
-    let server = server::CodeModeServer::new(pool, catalog, config_path.cloned()).await?;
+    let server = crate::server::CodeModeServer::new(cfg.servers, config_path.cloned()).await?;
 
     info!("starting MCP server on stdio (hot-reload enabled)");
     let service = server.serve(stdio()).await?;

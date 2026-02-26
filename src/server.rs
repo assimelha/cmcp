@@ -11,10 +11,8 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::catalog::Catalog;
-use crate::client::ClientPool;
-use crate::config;
-use crate::sandbox::Sandbox;
+use cmcp_core::config;
+use cmcp_core::{ProxyEngine, truncate_response};
 
 /// Default max response length in characters (~10k tokens).
 const DEFAULT_MAX_LENGTH: usize = 40_000;
@@ -37,11 +35,8 @@ struct ExecuteRequest {
     max_length: Option<usize>,
 }
 
-/// Mutable state that gets replaced on config reload.
-struct HotState {
-    sandbox: Sandbox,
-    catalog: Arc<Catalog>,
-    /// Modification times of config files at last load.
+/// Hot-reload state: tracks config file mtimes.
+struct HotReloadState {
     user_mtime: Option<SystemTime>,
     project_mtime: Option<SystemTime>,
 }
@@ -49,7 +44,8 @@ struct HotState {
 /// The code-mode MCP server that exposes `search` and `execute` tools.
 #[derive(Clone)]
 pub struct CodeModeServer {
-    state: Arc<Mutex<HotState>>,
+    engine: Arc<ProxyEngine>,
+    reload_state: Arc<Mutex<HotReloadState>>,
     config_path: Option<PathBuf>,
     tool_router: ToolRouter<Self>,
 }
@@ -61,13 +57,10 @@ fn file_mtime(path: &PathBuf) -> Option<SystemTime> {
 
 impl CodeModeServer {
     pub async fn new(
-        pool: ClientPool,
-        catalog: Catalog,
+        servers: std::collections::HashMap<String, config::ServerConfig>,
         config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let catalog = Arc::new(catalog);
-        let pool = Arc::new(pool);
-        let sandbox = Sandbox::new(pool, catalog.clone()).await?;
+        let engine = ProxyEngine::from_configs(servers).await?;
 
         // Snapshot current config file mtimes.
         let user_mtime = config::default_config_path()
@@ -76,9 +69,8 @@ impl CodeModeServer {
         let project_mtime = file_mtime(&config::project_config_path());
 
         Ok(Self {
-            state: Arc::new(Mutex::new(HotState {
-                sandbox,
-                catalog,
+            engine: Arc::new(engine),
+            reload_state: Arc::new(Mutex::new(HotReloadState {
                 user_mtime,
                 project_mtime,
             })),
@@ -90,7 +82,7 @@ impl CodeModeServer {
     /// Check if config files have changed and reload if needed.
     async fn maybe_reload(&self) {
         let needs_reload = {
-            let state = self.state.lock().await;
+            let state = self.reload_state.lock().await;
 
             let current_user_mtime = config::default_config_path()
                 .ok()
@@ -115,35 +107,19 @@ impl CodeModeServer {
             }
         };
 
-        let (pool, catalog) = match ClientPool::connect(cfg.servers).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to reconnect servers, keeping current state");
-                return;
-            }
-        };
+        if let Err(e) = self.engine.reload(cfg.servers).await {
+            tracing::warn!(error = %e, "failed to reload proxy engine, keeping current state");
+            return;
+        }
 
-        info!("{}", catalog.summary());
-
-        let catalog = Arc::new(catalog);
-        let pool = Arc::new(pool);
-
-        let sandbox = match Sandbox::new(pool, catalog.clone()).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to create sandbox, keeping current state");
-                return;
-            }
-        };
+        info!("{}", self.engine.summary().await);
 
         let user_mtime = config::default_config_path()
             .ok()
             .and_then(|p| file_mtime(&p));
         let project_mtime = file_mtime(&config::project_config_path());
 
-        let mut state = self.state.lock().await;
-        state.sandbox = sandbox;
-        state.catalog = catalog;
+        let mut state = self.reload_state.lock().await;
         state.user_mtime = user_mtime;
         state.project_mtime = project_mtime;
 
@@ -163,13 +139,11 @@ impl CodeModeServer {
     ) -> Result<CallToolResult, McpError> {
         self.maybe_reload().await;
 
-        let max_len = req.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
-        let state = self.state.lock().await;
-        match state.sandbox.search(&req.code).await {
+        match self.engine.search(&req.code, req.max_length).await {
             Ok(result) => {
                 let text = serde_json::to_string_pretty(&result).unwrap_or_default();
                 Ok(CallToolResult::success(vec![Content::text(
-                    truncate_response(text, max_len),
+                    truncate_response(text, req.max_length.unwrap_or(DEFAULT_MAX_LENGTH)),
                 )]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -188,36 +162,19 @@ impl CodeModeServer {
     ) -> Result<CallToolResult, McpError> {
         self.maybe_reload().await;
 
-        let max_len = req.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
-        let state = self.state.lock().await;
-        match state.sandbox.execute(&req.code).await {
+        match self.engine.execute(&req.code, req.max_length).await {
             Ok(result) => {
-                let text = serde_json::to_string_pretty(&result).unwrap_or_default();
-                Ok(CallToolResult::success(vec![Content::text(
-                    truncate_response(text, max_len),
-                )]))
+                let mut content = vec![Content::text(result.text)];
+                for img in result.images {
+                    content.push(Content::image(img.data, img.mime_type));
+                }
+                Ok(CallToolResult::success(content))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "execute error: {e}"
             ))])),
         }
     }
-}
-
-/// Truncate a response to `max_len` characters, appending a notice if truncated.
-fn truncate_response(text: String, max_len: usize) -> String {
-    if max_len == 0 || text.len() <= max_len {
-        return text;
-    }
-    // Find a clean break point (newline) near the limit.
-    let cut = text[..max_len]
-        .rfind('\n')
-        .unwrap_or(max_len);
-    let truncated = &text[..cut];
-    let remaining = text.len() - cut;
-    format!(
-        "{truncated}\n\n[truncated — {remaining} chars omitted. Use your code to extract only the data you need, or increase max_length.]"
-    )
 }
 
 #[tool_handler]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::config::ServerConfig;
+use cmcp_core::config::ServerConfig;
 
 /// A discovered MCP server from an external source.
 #[derive(Debug)]
