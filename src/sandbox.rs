@@ -4,6 +4,7 @@ use anyhow::Result;
 use rquickjs::context::EvalOptions;
 use rquickjs::prelude::Async;
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Function, Promise, Value, async_with};
+use tokio::sync::RwLock;
 use crate::catalog::Catalog;
 use crate::client::ClientPool;
 use crate::transpile;
@@ -14,7 +15,7 @@ pub struct Sandbox {
     rt: AsyncRuntime,
     ctx: AsyncContext,
     pool: Arc<ClientPool>,
-    catalog: Arc<Catalog>,
+    catalog: Arc<RwLock<Catalog>>,
 }
 
 fn eval_opts() -> EvalOptions {
@@ -47,7 +48,7 @@ const console = {
 "#;
 
 impl Sandbox {
-    pub async fn new(pool: Arc<ClientPool>, catalog: Arc<Catalog>) -> Result<Self> {
+    pub async fn new(pool: Arc<ClientPool>, catalog: Arc<RwLock<Catalog>>) -> Result<Self> {
         let rt = AsyncRuntime::new()?;
         rt.set_memory_limit(64 * 1024 * 1024).await; // 64 MB
         let ctx = AsyncContext::full(&rt).await?;
@@ -81,8 +82,11 @@ impl Sandbox {
 
     /// Execute a `search()` call — agent TypeScript code that filters the tool catalog.
     pub async fn search(&self, code: &str) -> Result<serde_json::Value> {
-        let catalog_json_str = serde_json::to_string(&self.catalog.to_json_value())?;
-        let code = transpile_agent_code(code, &self.catalog.type_declarations())?;
+        let catalog = self.catalog.read().await;
+        let catalog_json_str = serde_json::to_string(&catalog.to_json_value())?;
+        let type_decls = catalog.type_declarations();
+        drop(catalog);
+        let code = transpile_agent_code(code, &type_decls)?;
 
         let result = async_with!(self.ctx => |ctx| {
             let tools_val: Value = ctx.json_parse(catalog_json_str)
@@ -113,8 +117,19 @@ impl Sandbox {
     /// Execute an `execute()` call — agent TypeScript code that calls tools across servers.
     pub async fn execute(&self, code: &str) -> Result<serde_json::Value> {
         let pool = self.pool.clone();
-        let catalog = self.catalog.clone();
-        let code = transpile_agent_code(code, &self.catalog.type_declarations())?;
+        let _catalog = self.catalog.clone();
+        let catalog_guard = self.catalog.read().await;
+        let type_decls = catalog_guard.type_declarations();
+        let server_names: Vec<String> = catalog_guard.entries()
+            .iter()
+            .map(|e| e.server.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let catalog_json_str = serde_json::to_string(&catalog_guard.to_json_value())
+            .unwrap_or_else(|_| "[]".to_owned());
+        drop(catalog_guard);
+        let code = transpile_agent_code(code, &type_decls)?;
 
         let result = async_with!(self.ctx => |ctx| {
             // Inject __call_tool as an async native function.
@@ -151,16 +166,10 @@ impl Sandbox {
             // Build JS proxy objects for each server.
             let mut setup = String::new();
 
-            let mut server_names: Vec<&str> = catalog
-                .entries()
-                .iter()
-                .map(|e| e.server.as_str())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            server_names.sort();
+            let mut sorted_server_names = server_names;
+            sorted_server_names.sort();
 
-            for name in &server_names {
+            for name in &sorted_server_names {
                 // Convert server names with hyphens to valid JS identifiers
                 // e.g. "chrome-devtools" -> "chrome_devtools"
                 let js_name = name.replace('-', "_");
@@ -179,9 +188,6 @@ impl Sandbox {
                 ));
             }
 
-            // Also inject the catalog
-            let catalog_json_str = serde_json::to_string(&catalog.to_json_value())
-                .unwrap_or_else(|_| "[]".to_owned());
             setup.push_str(&format!("const tools = {};", catalog_json_str));
 
             let wrapped = format!("(async () => {{ {setup}\n{code} }})()", setup = setup, code = code);
@@ -230,7 +236,7 @@ mod tests {
 
     async fn test_sandbox() -> Sandbox {
         let (pool, catalog) = ClientPool::connect(HashMap::new()).await.unwrap();
-        Sandbox::new(Arc::new(pool), Arc::new(catalog)).await.unwrap()
+        Sandbox::new(Arc::new(pool), Arc::new(RwLock::new(catalog))).await.unwrap()
     }
 
     #[tokio::test]

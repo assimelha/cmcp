@@ -7,7 +7,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::{RoleClient, ServiceExt};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
 use crate::catalog::Catalog;
@@ -21,15 +21,28 @@ struct UpstreamServer {
 
 /// Manages connections to all upstream MCP servers.
 pub struct ClientPool {
-    servers: HashMap<String, Mutex<UpstreamServer>>,
+    servers: RwLock<HashMap<String, Mutex<UpstreamServer>>>,
+}
+
+impl Default for ClientPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClientPool {
+    /// Create an empty pool with no connected servers.
+    pub fn new() -> Self {
+        Self {
+            servers: RwLock::new(HashMap::new()),
+        }
+    }
+
     /// Connect to all configured servers and build the tool catalog.
     pub async fn connect(
         configs: HashMap<String, ServerConfig>,
     ) -> Result<(Self, Catalog)> {
-        let mut servers = HashMap::new();
+        let pool = Self::new();
         let mut catalog = Catalog::new();
 
         for (name, config) in configs {
@@ -37,10 +50,7 @@ impl ClientPool {
                 Ok((service, tools)) => {
                     info!(server = %name, tool_count = tools.len(), "connected");
                     catalog.add_server_tools(&name, tools);
-                    servers.insert(
-                        name,
-                        Mutex::new(UpstreamServer { service, config }),
-                    );
+                    pool.add_server(name, service, config).await;
                 }
                 Err(e) => {
                     tracing::warn!(server = %name, error = %e, "failed to connect, skipping");
@@ -48,7 +58,17 @@ impl ClientPool {
             }
         }
 
-        Ok((Self { servers }, catalog))
+        Ok((pool, catalog))
+    }
+
+    /// Add a connected server to the pool.
+    pub async fn add_server(
+        &self,
+        name: String,
+        service: RunningService<RoleClient, ()>,
+        config: ServerConfig,
+    ) {
+        self.servers.write().await.insert(name, Mutex::new(UpstreamServer { service, config }));
     }
 
     /// Build the transport config for HTTP/SSE servers.
@@ -83,7 +103,7 @@ impl ClientPool {
         config
     }
 
-    async fn connect_one(
+    pub async fn connect_one(
         name: &str,
         config: &ServerConfig,
     ) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>)> {
@@ -136,8 +156,8 @@ impl ClientPool {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<CallToolResult> {
-        let upstream_mutex = self
-            .servers
+        let servers = self.servers.read().await;
+        let upstream_mutex = servers
             .get(server_name)
             .with_context(|| format!("no server named '{server_name}'"))?;
 

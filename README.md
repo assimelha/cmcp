@@ -21,6 +21,7 @@ The agent writes code to interact with tools, not JSON blobs. This means:
 
 - **99% fewer tool definitions** in context (2 vs hundreds)
 - **Hot-reload** — add servers without restarting Claude or Codex
+- **Fast startup** — `cmcp serve` exposes `search` and `execute` immediately while upstream MCP servers connect concurrently in the background; tools become available as each server connects
 - **Composable** — chain multiple tool calls in a single execution
 - **Type-safe** — auto-generated TypeScript declarations from JSON Schema
 - **Sandboxed** — code runs in a QuickJS engine with a 64 MB memory limit
@@ -176,6 +177,22 @@ cmcp install --target claude --scope user  # Claude user scope (global)
 cmcp uninstall                       # Remove from both
 cmcp uninstall --target codex        # Remove from one
 ```
+
+## Agent skill
+
+After `cmcp install`, the client sees one MCP server named `code-mode-mcp` with the `search` and `execute` tools. The repository includes an [Agent Skills](https://agentskills.io) skill at `skills/cmcp-mcp-router/SKILL.md` that tells agents to route MCP work through the proxy instead of calling upstream servers directly.
+
+Any Agent Skills–compatible client will discover the skill automatically when placed in a standard skill directory. Install it by copying or symlinking the `cmcp-mcp-router/` directory:
+
+| Scope | Location |
+| --- | --- |
+| Project (OpenCode) | `.opencode/skills/cmcp-mcp-router/` |
+| Project (Claude Code) | `.claude/skills/cmcp-mcp-router/` |
+| Global (OpenCode) | `~/.config/opencode/skills/cmcp-mcp-router/` |
+| Global (Claude Code) | `~/.claude/skills/cmcp-mcp-router/` |
+| Global (any compatible client) | `~/.agents/skills/cmcp-mcp-router/` |
+
+OpenCode also discovers skills from `.agents/skills/` at the project root, so the included `skills/` directory works if symlinked or copied there. For other clients, add the skill directory wherever the client looks for Agent Skills.
 
 ## Scopes
 

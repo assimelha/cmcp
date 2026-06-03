@@ -56,11 +56,12 @@ fn file_mtime(path: &PathBuf) -> Option<SystemTime> {
 }
 
 impl CodeModeServer {
-    pub async fn new(
+    pub async fn new_background(
         servers: std::collections::HashMap<String, config::ServerConfig>,
         config_path: Option<PathBuf>,
-    ) -> anyhow::Result<Self> {
-        let engine = ProxyEngine::from_configs(servers).await?;
+    ) -> Self {
+        let engine = Arc::new(ProxyEngine::starting(servers.len()).await);
+        engine.start_background_load(servers);
 
         // Snapshot current config file mtimes.
         let user_mtime = config::default_config_path()
@@ -68,15 +69,15 @@ impl CodeModeServer {
             .and_then(|p| file_mtime(&p));
         let project_mtime = file_mtime(&config::project_config_path());
 
-        Ok(Self {
-            engine: Arc::new(engine),
+        Self {
+            engine,
             reload_state: Arc::new(Mutex::new(HotReloadState {
                 user_mtime,
                 project_mtime,
             })),
             config_path,
             tool_router: Self::tool_router(),
-        })
+        }
     }
 
     /// Check if config files have changed and reload if needed.

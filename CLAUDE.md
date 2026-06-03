@@ -40,9 +40,9 @@ Claude/Codex  ──stdio──▶  CodeModeServer (server.rs)
 
 **Source files** (all in `src/`):
 - `main.rs` — CLI entry point with Clap subcommands, all `cmd_*` handler functions
-- `server.rs` — MCP server exposing `search`+`execute`, hot-reload via config mtime checking
+- `server.rs` — MCP server exposing `search`+`execute`, starts upstream initialization in the background, hot-reload via config mtime checking
 - `client.rs` — `ClientPool` connecting to upstream MCP servers, one reconnect retry on failure
-- `catalog.rs` — Aggregates tools from all servers, generates TS type declarations from JSON Schema
+- `catalog.rs` — Aggregates tools from all ready servers, generates TS type declarations from JSON Schema
 - `sandbox.rs` — QuickJS sandbox, wraps agent code in async function, provides `call_tool` bridge
 - `transpile.rs` — oxc-based TS→JS (strips types only)
 - `config.rs` — TOML config types, scope enum (Local/User/Project), load/save/merge logic
@@ -53,6 +53,7 @@ Claude/Codex  ──stdio──▶  CodeModeServer (server.rs)
 - **Error handling:** `anyhow::Result<()>` everywhere, `.context()` for wrapping errors. Non-fatal errors (e.g. upstream connection failure) use `tracing::warn!` and continue.
 - **Async:** tokio with `#[tokio::main]`, `Arc<Mutex<T>>` for shared mutable state.
 - **Hot-reload:** `CodeModeServer` checks config file mtimes on every request via `maybe_reload()`, reconnects all servers if changed.
+- **Startup:** `cmcp serve` creates the proxy server immediately and loads the initial upstream catalog in a background task. Until ready, `search`/`execute` return retryable initializing errors rather than an empty catalog.
 - **Environment variables:** Values prefixed with `env:` (e.g. `env:MY_TOKEN`) are resolved at runtime via `resolve_env()`.
 - **Server name sanitization:** Hyphens converted to underscores for JS identifier compatibility.
 - **Config scopes:** Local/User (`~/.config/code-mode-mcp/config.toml`) and Project (`.cmcp.toml`), merged with project overriding user.
