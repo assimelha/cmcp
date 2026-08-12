@@ -1,3 +1,5 @@
+
+
 # cmcp — Code Mode MCP
 
 Stop registering dozens of MCP servers. Register **one proxy** that aggregates them all behind just **2 tools**.
@@ -79,6 +81,8 @@ return servers.map(s => ({
 ### execute — call tools
 
 Each server is a typed global object. The agent calls tools with `await`:
+
+> **Note:** Server names containing hyphens are automatically converted to underscores (e.g., `chrome-devtools` becomes `chrome_devtools`) for valid JavaScript identifiers.
 
 ```typescript
 // Navigate and take a screenshot
